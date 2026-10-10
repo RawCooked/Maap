@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -63,6 +64,18 @@ CONFIG = {
     ],
 }
 
+def find_ffmpeg():
+    exe = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except ImportError:
+        sys.exit("ffmpeg introuvable. Lance : pip install imageio-ffmpeg")
+
+
+FFMPEG = find_ffmpeg()
 FPS = 30
 DURATION = 15.0
 BPM = 120
@@ -187,8 +200,10 @@ def paste_center(canvas, sprite, cx, cy, alpha=1.0, scale=1.0, rot=0.0, sx=1.0):
 
 
 def draw_text(canvas, txt, cx, cy, size, fill=(255, 255, 255), stroke=0, stroke_fill=(0, 0, 0),
-              alpha=1.0, scale=1.0, rot=0.0, tracking=0, sx=1.0):
+              alpha=1.0, scale=1.0, rot=0.0, tracking=0, sx=1.0, max_w=1000):
     layer = text_layer(txt, size, fill, stroke, stroke_fill, tracking)
+    if layer.width > max_w:                       # texte trop long : on réduit pour qu'il tienne
+        layer = layer.resize((max_w, max(1, int(layer.height * max_w / layer.width))), Image.LANCZOS)
     paste_center(canvas, layer, cx, cy, alpha, scale, rot, sx)
 
 
@@ -352,10 +367,40 @@ class Background:
         return Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGB")
 
 
+# ───────────────────────────── clip 3D (rendu Blender) ─────────────────────────────
+class Clip:
+    """Lit une vidéo image par image (via ffmpeg), recadrée en 1080x1920. Garde la dernière à la fin."""
+
+    def __init__(self, path):
+        cmd = [FFMPEG, "-loglevel", "error", "-i", str(path), "-vf",
+               f"scale={Ctx.W}:{Ctx.H}:force_original_aspect_ratio=increase,crop={Ctx.W}:{Ctx.H},fps={FPS}",
+               "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]
+        self.p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+        self.last = Image.new("RGB", (Ctx.W, Ctx.H), (0, 0, 0))
+        self.n = Ctx.W * Ctx.H * 3
+
+    def next(self):
+        buf = self.p.stdout.read(self.n) if self.p else b""
+        if len(buf) == self.n:
+            self.last = Image.frombytes("RGB", (Ctx.W, Ctx.H), buf)
+        return self.last
+
+
+@lru_cache(maxsize=1)
+def top_bottom_shade():
+    """Dégradé sombre en haut et en bas pour que les textes restent lisibles sur la 3D."""
+    y = np.linspace(0, 1, Ctx.H, dtype=np.float32)
+    a = np.clip(1 - y / 0.22, 0, 1) ** 1.5 * 200 + np.clip((y - 0.72) / 0.28, 0, 1) ** 1.3 * 230
+    arr = np.zeros((Ctx.H, Ctx.W, 4), np.uint8)
+    arr[..., 3] = a.astype(np.uint8)[:, None]
+    return Image.fromarray(arr, "RGBA")
+
+
 # ───────────────────────────── la vidéo ─────────────────────────────
 class Ad:
-    def __init__(self, cfg, photo=None, logo=None):
+    def __init__(self, cfg, photo=None, logo=None, clip3d=None):
         self.cfg = cfg
+        self.clip = Clip(clip3d) if clip3d else None
         self.bg = Background(cfg)
         self.accent = tuple(cfg["accent"])
         self.photo = Image.open(photo).convert("RGBA") if photo else None
@@ -385,7 +430,10 @@ class Ad:
                             outline=self.accent + (255,), width=4)
         d.rounded_rectangle([0, 0, 22, 249], 12, fill=self.accent + (255,))
         card.alpha_composite(text_layer(title, 44, (255, 255, 255)), (46, 56))
-        card.alpha_composite(text_layer(sub, 26, (170, 180, 200)), (48, 148))
+        sl = text_layer(sub, 32, (190, 198, 214))
+        if sl.width > W - 70:
+            sl = sl.resize((W - 70, int(sl.height * (W - 70) / sl.width)), Image.LANCZOS)
+        card.alpha_composite(sl, (48, 145))
         paste_center(im, card, cx + x_off, cy, alpha=clamp(k * 3))
 
     # -- scènes -----------------------------------------------------------
@@ -483,11 +531,12 @@ class Ad:
         kt = ease_out_back(prog(t, T_FEAT_END + 0.35, T_FEAT_END + 0.8))
         draw_text(im, self.cfg["zoom_text"], Ctx.W / 2, 1560, 72, stroke=6, scale=kt, alpha=1 - k_out)
 
-    def scene_price(self, im, t):
+    def scene_price(self, im, t, draw_shirt=True):
         T0 = T_ZOOM_END
         kin = ease_out(prog(t, T0, T0 + 0.5))
-        self.shirt(im, t, Ctx.W / 2, lerp(1400, 560, kin), lerp(0.4, 0.72, kin), rot=math.sin(t * 3) * 3,
-                   color_idx=0, shadow=True)
+        if draw_shirt:
+            self.shirt(im, t, Ctx.W / 2, lerp(1400, 560, kin), lerp(0.4, 0.72, kin), rot=math.sin(t * 3) * 3,
+                       color_idx=0, shadow=True)
         # ancien prix barré
         cur = self.cfg["currency"]
         ko = ease_out_back(prog(t, T0 + 0.5, T0 + 0.8))
@@ -539,9 +588,70 @@ class Ad:
         ab = max(ab, 0.25 * math.exp(-kb * 6))
         return flash, shake, ab
 
+    def render_frame_3d(self, i, t):
+        src = self.clip.next()
+        if t < T_HOOK_END:                                     # 3D floutée et sombre derrière l'accroche
+            k = ease_in_out(prog(t, T_HOOK_END - 0.5, T_HOOK_END))
+            blur = src.filter(ImageFilter.GaussianBlur(14 * (1 - k) + 0.01))
+            im = Image.blend(Image.new("RGB", src.size, (0, 0, 0)), blur, 0.35 + 0.65 * k).convert("RGBA")
+        elif T_FEAT_END <= t < T_ZOOM_END:                     # zoom dans l'image 3D
+            k = ease_in_out(prog(t, T_FEAT_END, T_FEAT_END + 0.6)) * (1 - ease_in_out(prog(t, T_ZOOM_END - 0.3, T_ZOOM_END)))
+            z = 1 + 0.45 * k
+            w, h = int(Ctx.W / z), int(Ctx.H / z)
+            cx, cy = Ctx.W // 2, int(Ctx.H * 0.47)
+            box = (cx - w // 2, max(0, cy - h // 2), cx + w // 2, max(0, cy - h // 2) + h)
+            im = src.crop(box).resize((Ctx.W, Ctx.H), Image.BILINEAR).convert("RGBA")
+        elif t >= T_ZOOM_END:                                  # prix : 3D assombrie
+            k = ease_out(prog(t, T_ZOOM_END, T_ZOOM_END + 0.5))
+            im = Image.blend(src, src.filter(ImageFilter.GaussianBlur(8)), k)
+            im = Image.blend(Image.new("RGB", src.size, (0, 0, 0)), im, 1 - 0.55 * k).convert("RGBA")
+        else:
+            im = src.convert("RGBA")
+        im.alpha_composite(top_bottom_shade())
+
+        if t < T_HOOK_END:
+            self.scene_hook(im, t)
+        elif t < T_REVEAL_END:
+            kt = ease_out_back(prog(t, T_HOOK_END + 0.2, T_HOOK_END + 0.7))
+            draw_text(im, self.cfg["brand"], Ctx.W / 2 - (1 - kt) * 900, 150, 44, fill=self.accent, tracking=14, stroke=2)
+            draw_text(im, self.cfg["product"], Ctx.W / 2 + (1 - kt) * 900, 250, 104, stroke=6, tracking=2)
+            kb = ease_out(prog(t, T_HOOK_END + 1.2, T_HOOK_END + 1.6))
+            draw_text(im, self.cfg.get("reveal_sub", "100 % COTON · IMPRIMÉ À LA MAIN"), Ctx.W / 2, 1760 + (1 - kb) * 120,
+                      42, fill=(230, 230, 236), alpha=kb, tracking=4, stroke=2)
+        elif t < T_FEAT_END:
+            feats = self.cfg["features"]
+            span = (T_FEAT_END - T_REVEAL_END) / len(feats)
+            j = min(len(feats) - 1, int((t - T_REVEAL_END) / span))
+            t0 = T_REVEAL_END + j * span
+            side = 1 if j % 2 == 0 else -1
+            if j > 0:                                          # la carte précédente part de l'autre côté
+                ko = prog(t, t0, t0 + 0.3)
+                if ko < 1:
+                    pt, ps = feats[j - 1]
+                    self.card(im, pt, ps, Ctx.W / 2 - 160 * side, 1700, 1 - ko, -side)
+            title, sub = feats[j]
+            self.card(im, title, sub, Ctx.W / 2 + 160 * side, 1700, prog(t, t0 + 0.08, t0 + 0.5), side)
+            draw_text(im, f"0{j + 1}", Ctx.W / 2 - 330 * side, 1470, 150, fill=self.accent,
+                      alpha=0.95 * ease_out(prog(t, t0, t0 + 0.3)))
+            for q in range(len(feats)):
+                ImageDraw.Draw(im).rounded_rectangle([Ctx.W / 2 - 150 + q * 108, 120, Ctx.W / 2 - 150 + q * 108 + 90, 132],
+                                                     6, fill=self.accent if q <= j else (70, 76, 92))
+        elif t < T_ZOOM_END:
+            kt = ease_out_back(prog(t, T_FEAT_END + 0.3, T_FEAT_END + 0.7))
+            draw_text(im, self.cfg["zoom_text"], Ctx.W / 2, 1720, 80, stroke=6, scale=kt,
+                      alpha=1 - prog(t, T_ZOOM_END - 0.3, T_ZOOM_END))
+        else:
+            self.scene_price(im, t, draw_shirt=False)
+        return im
+
     def render_frame(self, i):
         t = i / FPS
         beat_pulse = math.exp(-((t % BEAT) / BEAT) * 5)
+        if self.clip:
+            im = self.render_frame_3d(i, t)
+            ImageDraw.Draw(im).rectangle([0, 0, Ctx.W * t / DURATION, 8], fill=self.accent)
+            flash, shake, ab = self.fx(t)
+            return self.bg.post(im, i, shake=shake, aberration=ab * 0.6, flash=flash * 0.7)
         im = self.bg.frame(t, beat_pulse, hue_boost=0.15 if T_FEAT_END <= t < T_ZOOM_END else 0)
         if t < T_HOOK_END:
             self.scene_hook(im, t)
@@ -639,10 +749,9 @@ def main():
     ap.add_argument("--music", help="musique (mp3/wav) à la place du beat synthétisé")
     ap.add_argument("--preview", action="store_true", help="540x960, plus rapide")
     ap.add_argument("--silent", action="store_true", help="sans audio")
+    ap.add_argument("--clip3d", help="vidéo 3D (rendu Blender) utilisée comme image principale")
     args = ap.parse_args()
 
-    if not shutil.which("ffmpeg"):
-        sys.exit("ffmpeg est introuvable dans le PATH.")
     cfg = dict(CONFIG)
     if args.config:
         cfg.update(json.loads(Path(args.config).read_text(encoding="utf-8")))
@@ -652,7 +761,7 @@ def main():
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    ad = Ad(cfg, args.photo, args.logo)
+    ad = Ad(cfg, args.photo, args.logo, args.clip3d)
 
     audio = None
     if not args.silent:
@@ -663,7 +772,7 @@ def main():
             synth_audio(Path(audio))
 
     W, H = (540, 960) if args.preview else (Ctx.W, Ctx.H)
-    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+    cmd = [FFMPEG, "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
            "-s", f"{W}x{H}", "-r", str(FPS), "-i", "-"]
     if audio:
         cmd += ["-i", audio, "-map", "0:v", "-map", "1:a", "-af", f"afade=t=out:st={DURATION - 0.6}:d=0.6",

@@ -1,0 +1,22 @@
+{
+  "brand": "MA MARQUE",
+  "product": "DON'T LOSE YOURSELF",
+  "price": 49,
+  "old_price": 65,
+  "currency": "DT",
+  "stock": 30,
+  "cta": "COMMANDER",
+  "cta_sub": "lien en bio",
+  "hook": ["CE T-SHIRT", "CACHE UN", "MESSAGE"],
+  "reveal_sub": "LA FLEUR DEVANT. LE SECRET DERRIÈRE.",
+  "features": [
+    ["LE DEVANT", "une fleur rouge, côté cœur"],
+    ["LE DOS", "un message en spirale"],
+    ["LE CENTRE", "a une signification cachée"]
+  ],
+  "zoom_text": "LIS-LE JUSQU'AU CENTRE.",
+  "marquee": "DON'T LOSE YOURSELF  ·  ",
+  "accent": [199, 44, 31],
+  "bg": [10, 10, 12],
+  "colors": [["NOIR", [18, 18, 18]]]
+}

@@ -15,6 +15,9 @@ Options (après le "--") :
   --color HEX      couleur du tissu (défaut #141418)
   --bg HEX         couleur du fond (défaut #0A0D14)
   --print-size M   largeur du print en mètres (défaut 0.24)
+  --print-top CM   distance col → haut du print (défaut 12)
+  --turn           la caméra passe du devant au dos
+  --engine eevee   rendu rapide (carte graphique)
   --wind F         force du vent (défaut 1.0 = brise ; 2.0 = tempête)
   --seconds S      durée de la vidéo (défaut 5)
   --res WxH        défaut 1080x1920 (vertical)
@@ -43,6 +46,9 @@ ap.add_argument("--back")
 ap.add_argument("--color", default="#141418")
 ap.add_argument("--bg", default="#0A0D14")
 ap.add_argument("--print-size", type=float, default=0.24)
+ap.add_argument("--print-top", type=float, default=12.0, help="cm entre le col et le haut du print")
+ap.add_argument("--turn", action="store_true", help="la caméra passe du devant au dos")
+ap.add_argument("--exposure", type=float, default=-0.8)
 ap.add_argument("--wind", type=float, default=1.0)
 ap.add_argument("--seconds", type=float, default=5.0)
 ap.add_argument("--res", default="1080x1920")
@@ -243,7 +249,7 @@ def fabric_material(name, design_path, mirror_u=False):
     mixb = N.new("ShaderNodeMath"); mixb.operation = "ADD"; mixb.location = (-350, -400)
     L.new(wave.outputs["Fac"], mixb.inputs[0]); L.new(noise.outputs["Fac"], mixb.inputs[1])
     bump = N.new("ShaderNodeBump"); bump.location = (300, -350)
-    bump.inputs["Strength"].default_value = 0.12
+    bump.inputs["Strength"].default_value = 0.06
     bump.inputs["Distance"].default_value = 0.0005
     L.new(mixb.outputs[0], bump.inputs["Height"])
     L.new(bump.outputs[0], bsdf.inputs["Normal"])
@@ -259,7 +265,7 @@ def fabric_material(name, design_path, mirror_u=False):
     aspect = img.size[1] / max(1, img.size[0])
     w_cm = A.print_size * 100
     h_cm = w_cm * aspect
-    cz = -12 - h_cm / 2  # haut du print 12 cm sous le col
+    cz = -A.print_top - h_cm / 2
     side = 1 if mirror_u else 0
 
     def math_node(op, a, b, loc):
@@ -397,23 +403,32 @@ def area(name, loc, energy, size, color=(1, 1, 1), target=(0, 0, 1.25)):
     return lo
 
 
-area("Key", (-1.4, -1.8, 2.3), 220, 1.6, (1.0, 0.96, 0.92))
-area("Fill", (1.8, -1.4, 1.2), 50, 2.0, (0.85, 0.9, 1.0))
-area("Rim", (0.9, 0.9, 2.0), 260, 0.6, (1.0, 0.3, 0.35), (0, 0, 1.4))      # liseré rouge de la marque
-area("Rim2", (-1.0, 0.9, 1.6), 140, 0.6, (0.6, 0.75, 1.0), (0, 0, 1.3))
+lights = [area("Key", (-1.4, -1.8, 2.3), 220, 1.6, (1.0, 0.96, 0.92)),
+          area("Fill", (1.8, -1.4, 1.2), 50, 2.0, (0.85, 0.9, 1.0))]
+lights.append(area("Rim", (0.9, 0.9, 2.0), 260, 0.6, (1.0, 0.3, 0.35), (0, 0, 1.4)))      # liseré rouge de la marque
+lights.append(area("Rim2", (-1.0, 0.9, 1.6), 140, 0.6, (0.6, 0.75, 1.0), (0, 0, 1.3)))
 
 cam_d = bpy.data.cameras.new("Cam"); cam_d.lens = 50
 cam = bpy.data.objects.new("Cam", cam_d); scene.collection.objects.link(cam)
 pivot = bpy.data.objects.new("Pivot", None); scene.collection.objects.link(pivot)
 pivot.location = (0, 0, 1.2)
 cam.parent = pivot
+for lo in lights + [cyclo]:   # lumières et fond tournent avec la caméra : le dos est aussi beau que le devant
+    lo.parent = pivot
+    lo.matrix_parent_inverse = pivot.matrix_world.inverted()
 cam.location = (0, -3.0, 0.05)
 cam.rotation_euler = (math.radians(90), 0, 0)
 scene.camera = cam
 # orbite lente + léger travelling avant
 f0, f1 = PREROLL, PREROLL + total_frames
-pivot.rotation_euler = (0, 0, math.radians(-28)); pivot.keyframe_insert("rotation_euler", frame=f0)
-pivot.rotation_euler = (0, 0, math.radians(28)); pivot.keyframe_insert("rotation_euler", frame=f1)
+if A.turn:
+    # devant pendant ~60 %, demi-tour, puis le dos jusqu'à la fin
+    for frac, deg in ((0.0, -25), (0.58, 12), (0.76, 180), (1.0, 195)):
+        pivot.rotation_euler = (0, 0, math.radians(deg))
+        pivot.keyframe_insert("rotation_euler", frame=int(f0 + frac * total_frames))
+else:
+    pivot.rotation_euler = (0, 0, math.radians(-28)); pivot.keyframe_insert("rotation_euler", frame=f0)
+    pivot.rotation_euler = (0, 0, math.radians(28)); pivot.keyframe_insert("rotation_euler", frame=f1)
 cam.location = (0, -2.6, 0.05); cam.keyframe_insert("location", frame=f0)
 cam.location = (0, -2.1, 0.1); cam.keyframe_insert("location", frame=f1)
 for fc in list(pivot.animation_data.action.fcurves) + list(cam.animation_data.action.fcurves):
@@ -428,7 +443,8 @@ cam_d.dof.aperture_fstop = 2.8
 W, Hh = (int(v) for v in A.res.lower().split("x"))
 r = scene.render
 if A.engine == "eevee":
-    r.engine = "BLENDER_EEVEE_NEXT"
+    names = [e.identifier for e in bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items]
+    r.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in names else "BLENDER_EEVEE"
     scene.eevee.taa_render_samples = max(16, A.samples)
     scene.eevee.use_shadows = True
 else:
@@ -454,6 +470,7 @@ r.fps = A.fps
 r.film_transparent = False
 scene.view_settings.view_transform = "Standard"   # couleurs de marque fidèles
 scene.view_settings.look = "Medium High Contrast"
+scene.view_settings.exposure = A.exposure
 scene.frame_start = 1
 scene.frame_end = PREROLL + total_frames
 
@@ -485,7 +502,7 @@ for i, f in enumerate(range(PREROLL + 1, PREROLL + total_frames + 1, A.every)):
     bpy.ops.render.render(write_still=True)
     print(f"[tshirt3d] rendu {i + 1}/{total_frames // A.every}", flush=True)
 
-ff = shutil.which("ffmpeg")
+ff = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
 if ff:
     subprocess.run([ff, "-y", "-loglevel", "error", "-framerate", str(A.fps // A.every or 1), "-i",
                     os.path.join(frames_dir, "%04d.png"), "-c:v", "libx264", "-crf", "17",
