@@ -35,7 +35,7 @@ import sys
 
 import bmesh
 import bpy
-from mathutils import Vector
+from mathutils import Matrix, Vector
 from mathutils.geometry import delaunay_2d_cdt
 
 # ─────────────────────────── arguments ───────────────────────────
@@ -415,7 +415,8 @@ pivot.location = (0, 0, 1.2)
 cam.parent = pivot
 for lo in lights + [cyclo]:   # lumières et fond tournent avec la caméra : le dos est aussi beau que le devant
     lo.parent = pivot
-    lo.matrix_parent_inverse = pivot.matrix_world.inverted()
+    # matrix_world du pivot n'est pas encore calculé ici : on construit l'inverse à la main
+    lo.matrix_parent_inverse = Matrix.Translation(pivot.location).inverted()
 cam.location = (0, -3.0, 0.05)
 cam.rotation_euler = (math.radians(90), 0, 0)
 scene.camera = cam
@@ -496,11 +497,28 @@ out = os.path.abspath(A.out)
 frames_dir = os.path.splitext(out)[0] + "_frames"
 os.makedirs(frames_dir, exist_ok=True)
 r.image_settings.file_format = "PNG"
-for i, f in enumerate(range(PREROLL + 1, PREROLL + total_frames + 1, A.every)):
-    scene.frame_set(f)
-    r.filepath = os.path.join(frames_dir, f"{i:04d}.png")
-    bpy.ops.render.render(write_still=True)
-    print(f"[tshirt3d] rendu {i + 1}/{total_frames // A.every}", flush=True)
+for old in os.listdir(frames_dir):
+    if old.endswith(".png"):
+        os.remove(os.path.join(frames_dir, old))
+# rendu de toute l'animation en un seul appel : Blender ne recharge pas la scène à chaque image
+scene.frame_start = PREROLL + 1
+scene.frame_end = PREROLL + total_frames
+scene.frame_step = A.every
+r.filepath = os.path.join(frames_dir, "f_")
+n_total = len(range(scene.frame_start, scene.frame_end + 1, A.every))
+done = [0]
+
+
+def _progress(_scene, _depsgraph=None):
+    done[0] += 1
+    print(f"[tshirt3d] rendu {done[0]}/{n_total}", flush=True)
+
+
+bpy.app.handlers.render_write.append(_progress)
+bpy.ops.render.render(animation=True)
+# renumérote 0000, 0001, ... pour ffmpeg
+for i, name in enumerate(sorted(n for n in os.listdir(frames_dir) if n.startswith("f_"))):
+    os.replace(os.path.join(frames_dir, name), os.path.join(frames_dir, f"{i:04d}.png"))
 
 ff = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
 if ff:

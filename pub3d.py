@@ -128,9 +128,22 @@ def main():
             cmd += ["--preview"]
         print("[pub3d] Blender :", " ".join(f'"{c}"' if " " in c else c for c in cmd))
         t0 = time.time()
-        p = subprocess.run(cmd)
+        if clip.exists():
+            clip.unlink()
+        log_path = work / "blender.log"
+        # Blender affiche beaucoup d'avertissements internes sans gravité : ils vont dans
+        # out/work/blender.log, seules les lignes de progression s'affichent ici.
+        with open(log_path, "w", encoding="utf-8", errors="replace") as log:
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                 text=True, encoding="utf-8", errors="replace")
+            for line in p.stdout:
+                log.write(line)
+                if line.startswith("[tshirt3d]") or "Traceback" in line or line.startswith("Error:"):
+                    print(line, end="", flush=True)
+            p.wait()
         if p.returncode != 0 or not clip.exists():
-            sys.exit("[pub3d] Blender a échoué (voir les messages au-dessus).")
+            print("".join(open(log_path, encoding="utf-8", errors="replace").readlines()[-40:]))
+            sys.exit(f"[pub3d] Blender a échoué. Journal complet : {log_path}")
         print(f"[pub3d] 3D rendue en {time.time() - t0:.0f} s")
 
     # 3. montage
