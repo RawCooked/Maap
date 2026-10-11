@@ -443,7 +443,7 @@ cloth.point_cache.frame_start = 1
 cloth.point_cache.frame_end = PREROLL + total_frames
 subd = shirt.modifiers.new("Subdiv", "SUBSURF")
 subd.levels = 1
-subd.render_levels = 1 if A.preview else 2   # tissu lisse au rendu final
+subd.render_levels = 1   # niveau 2 multipliait le maillage par ~30 : le processeur le reconstruisait à chaque image
 sol = shirt.modifiers.new("Epaisseur", "SOLIDIFY")
 sol.thickness = 0.0025
 
@@ -642,6 +642,8 @@ else:
     scene.cycles.samples = A.samples
     scene.cycles.use_denoising = True
     scene.cycles.max_bounces = 4
+    if hasattr(scene.cycles, "denoising_use_gpu"):
+        scene.cycles.denoising_use_gpu = True     # débruitage sur la carte graphique, pas sur le processeur
     if not gpu_found:
         # Cycles sur le processeur = plusieurs minutes par image (une journée pour la vidéo).
         # On bascule sur EEVEE, qui passe par la carte graphique via le pilote d'affichage.
@@ -655,6 +657,7 @@ else:
 r.resolution_x, r.resolution_y = W, Hh
 r.fps = A.fps
 r.film_transparent = False
+r.use_persistent_data = True    # garde fond, lumières et textures en mémoire entre les images
 # flou de mouvement : léger en EEVEE ; coupé en Cycles où il multiplie le temps de rendu du tissu
 r.use_motion_blur = r.engine != "CYCLES"
 r.motion_blur_shutter = 0.5
