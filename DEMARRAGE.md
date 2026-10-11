@@ -24,6 +24,7 @@ Ouvre ensuite `design\produit.json` pour changer le nom, le prix et les textes. 
 ## 4. Lancer
 | Fichier | Ce qu'il fait | Durée estimée sur ton PC* |
 |---|---|---|
+| `VERIFIER_3D.bat` | **À lancer en premier** : simulation + 8 images dans `out\check.png`, sans vidéo. Envoie l'image à Claude avant le rendu complet | la simulation + ~1 min |
 | `TEST_RAPIDE.bat` | 540×960, EEVEE : **seulement pour vérifier le cadrage**. C'est volontairement basse définition, donc pixelisé | ~5 min |
 | `LANCER_PUB3D.bat --fast` | 1080×1920, EEVEE : propre, rapide | ~10 à 15 min |
 | `LANCER_PUB3D.bat` | 1080×1920, **Cycles sur la carte graphique, 128 échantillons** : la qualité maximale | dépend de la carte graphique : la fenêtre affiche le temps restant |

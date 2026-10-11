@@ -96,6 +96,8 @@ def main():
     ap.add_argument("--hanger", action="store_true", help="t-shirt sur un cintre (par défaut : porté par un corps invisible)")
     ap.add_argument("--orbit", action="store_true", help="caméra en simple rotation au lieu des plans")
     ap.add_argument("--skip-3d", action="store_true", help="réutilise le rendu 3D existant")
+    ap.add_argument("--check", action="store_true",
+                    help="vérification rapide : simulation + 8 images dans out/check.png, sans vidéo")
     ap.add_argument("--out", default="out/pub3d.mp4")
     A = ap.parse_args()
 
@@ -123,7 +125,9 @@ def main():
                "--wind", str(A.wind), "--seconds", str(seconds), "--out", str(clip)]
         if back:
             cmd += ["--back", str(back)]
-        if A.preview:
+        if A.check:
+            cmd += ["--check"]
+        elif A.preview:
             cmd += ["--engine", "eevee", "--samples", "16", "--preview"]
         elif A.fast:
             cmd += ["--engine", "eevee", "--samples", "64"]
@@ -152,6 +156,20 @@ def main():
             print("".join(open(log_path, encoding="utf-8", errors="replace").readlines()[-40:]))
             sys.exit(f"[pub3d] Blender a échoué. Journal complet : {log_path}")
         print(f"[pub3d] 3D rendue en {time.time() - t0:.0f} s")
+
+    if A.check:                       # planche de contrôle, pas de montage
+        frames = sorted((work / "tshirt3d_frames").glob("*.png"))
+        ims = [Image.open(f).convert("RGB") for f in frames][:8]
+        if not ims:
+            sys.exit("[pub3d] aucune image de contrôle produite")
+        w, h = ims[0].size
+        sheet = Image.new("RGB", (w * 4, h * ((len(ims) + 3) // 4)), (0, 0, 0))
+        for i, im in enumerate(ims):
+            sheet.paste(im, ((i % 4) * w, (i // 4) * h))
+        Path("out").mkdir(exist_ok=True)
+        sheet.save("out/check.png")
+        print("[pub3d] Vérification prête : out\\check.png (8 moments de la vidéo). Envoie-la à Claude.")
+        return
 
     # 3. montage
     cmd = [sys.executable, str(HERE / "tshirt_video.py"), "--clip3d", str(clip), "--out", A.out]

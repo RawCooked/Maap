@@ -69,7 +69,11 @@ ap.add_argument("--engine", choices=["cycles", "eevee"], default="cycles")
 ap.add_argument("--sim-only", action="store_true")
 ap.add_argument("--mass", type=float, default=0.02)
 ap.add_argument("--every", type=int, default=1, help="ne rend qu'une image sur N (tests)")
+ap.add_argument("--check", action="store_true", help="vérification : 8 images basse définition, pas de vidéo")
 A = ap.parse_args(argv)
+if A.check:
+    A.preview = True
+    A.engine = "eevee"
 if A.preview:
     A.res, A.samples = "540x960", 16
 
@@ -105,7 +109,9 @@ OUTLINE = [
     ((-24.0, -4.0), True),    # épaule gauche
 ]
 NECK_DIP = 7.0   # profondeur de l'encolure devant (cm)
-H = 1.4 if A.preview else 1.25  # finesse du maillage (cm) ; plus petit = plus beau mais bien plus lent
+# finesse du maillage (cm). La vérification (--check) garde celle du rendu final : la masse étant
+# donnée par sommet, changer le maillage changerait le comportement du tissu.
+H = 1.4 if (A.preview and not A.check) else 1.25
 
 
 def outline_points():
@@ -333,7 +339,7 @@ def build_body():
     ob.hide_render = True
     col = ob.modifiers.new("Collision", "COLLISION")
     ob.collision.thickness_outer = 0.006
-    ob.collision.cloth_friction = 8.0
+    ob.collision.cloth_friction = 1.5     # assez bas pour que le tissu retombe après une rafale
     ob.collision.damping = 0.6
     return ob
 
@@ -426,7 +432,7 @@ s.tension_stiffness = 15
 s.compression_stiffness = 15
 s.shear_stiffness = 5
 s.bending_stiffness = 0.08
-s.air_damping = 1.0
+s.air_damping = 1.0 if A.hanger else 1.6
 s.vertex_group_mass = "pin"
 s.use_pressure = A.hanger        # sur cintre : la pression donne du volume ; sinon c'est le corps
 s.uniform_pressure_force = 0.6
@@ -450,14 +456,14 @@ sol.thickness = 0.0025
 # vent : un souffle principal qui varie + turbulence
 bpy.ops.object.effector_add(type="WIND", location=(-1.6, -1.2, 1.3))
 wind = bpy.context.object
-WIND_DIR = Vector((0.35, -0.9, 0.2)) if A.hanger else Vector((0.45, 0.85, 0.12))
+WIND_DIR = Vector((0.35, -0.9, 0.2)) if A.hanger else Vector((0.4, 0.9, -0.05))   # légèrement vers le bas : ne soulève pas le bas
 wind.rotation_euler = WIND_DIR.to_track_quat("Z", "Y").to_euler()
 # le tissu ne réagit qu'au vent qui le frappe de face. Sur cintre il souffle vers la caméra ;
 # sur le corps il vient de face : le devant se plaque sur le torse, manches et bas claquent derrière.
 wind.field.strength = 0
-wind.field.noise = 3.0 if A.hanger else 6.0
+wind.field.noise = 3.0
 wind.field.seed = 7
-WIND_BASE = 900 if A.hanger else 2600
+WIND_BASE = 900 if A.hanger else 700    # 2600 retroussait le t-shirt en boule sur les épaules
 gusts = ((0.0, 1.0), (0.12, 1.5), (0.22, 0.9), (0.38, 1.7), (0.5, 1.1), (0.62, 1.8), (0.75, 1.0),
          (0.88, 1.6), (1.0, 1.2))
 for f, k in [(1, 0.0), (PREROLL - 15, 0.0)] + [(PREROLL + fr * total_frames, k) for fr, k in gusts]:
@@ -465,7 +471,7 @@ for f, k in [(1, 0.0), (PREROLL - 15, 0.0)] + [(PREROLL + fr * total_frames, k) 
     wind.field.keyframe_insert("strength", frame=int(f))
 bpy.ops.object.effector_add(type="TURBULENCE", location=(0, 0, 1.3))
 turb = bpy.context.object
-turb.field.strength = (160 if A.hanger else 450) * A.wind
+turb.field.strength = 160 * A.wind
 turb.field.size = 0.4
 turb.field.flow = 0.5
 
@@ -699,6 +705,8 @@ for old in os.listdir(frames_dir):
 # rendu de toute l'animation en un seul appel : Blender ne recharge pas la scène à chaque image
 scene.frame_start = PREROLL + 1
 scene.frame_end = PREROLL + total_frames
+if A.check:
+    A.every = max(1, total_frames // 8)
 scene.frame_step = A.every
 r.filepath = os.path.join(frames_dir, "f_")
 n_total = len(range(scene.frame_start, scene.frame_end + 1, A.every))
