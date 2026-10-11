@@ -9,6 +9,9 @@ fait tourner la caméra et rend une vidéo.
     blender -b -P tshirt3d.py -- --design d.png --color "#C42636" --preview
     blender -b -P tshirt3d.py -- --design d.png --save-blend out/scene.blend   # pour retoucher à la main
 
+Par défaut le t-shirt est porté par un corps invisible (torse + bras), dans un grand vent, filmé en
+six plans (large, contre-plongée, gros plan poitrine, latéral, dos, plan final).
+
 Options (après le "--") :
   --design PNG     design à imprimer (transparent conseillé)
   --back PNG       design au dos (facultatif)
@@ -17,6 +20,8 @@ Options (après le "--") :
   --print-size M   largeur du print en mètres (défaut 0.24)
   --print-top CM   distance col → haut du print (défaut 12)
   --turn           la caméra passe du devant au dos
+  --hanger         sur un cintre au lieu du corps invisible
+  --orbit          simple rotation au lieu des six plans
   --engine eevee   rendu rapide (carte graphique)
   --wind F         force du vent (défaut 1.0 = brise ; 2.0 = tempête)
   --seconds S      durée de la vidéo (défaut 5)
@@ -48,6 +53,8 @@ ap.add_argument("--bg", default="#0A0D14")
 ap.add_argument("--print-size", type=float, default=0.24)
 ap.add_argument("--print-top", type=float, default=12.0, help="cm entre le col et le haut du print")
 ap.add_argument("--turn", action="store_true", help="la caméra passe du devant au dos")
+ap.add_argument("--hanger", action="store_true", help="t-shirt sur un cintre au lieu d'un corps invisible")
+ap.add_argument("--orbit", action="store_true", help="ancienne caméra : simple rotation au lieu des plans")
 ap.add_argument("--exposure", type=float, default=-0.8)
 ap.add_argument("--wind", type=float, default=1.0)
 ap.add_argument("--seconds", type=float, default=5.0)
@@ -97,7 +104,7 @@ OUTLINE = [
     ((-24.0, -4.0), True),    # épaule gauche
 ]
 NECK_DIP = 7.0   # profondeur de l'encolure devant (cm)
-H = 1.4          # finesse du maillage (cm) ; plus petit = plus beau mais plus lent
+H = 1.4 if A.preview else 1.1   # finesse du maillage (cm) ; plus petit = plus beau mais plus lent
 
 
 def outline_points():
@@ -141,6 +148,60 @@ def dist_to_poly(poly, x, z):
     return best
 
 
+# Corps invisible : (hauteur sous le col, demi-largeur, demi-épaisseur) en mètres
+BODY_RINGS = [(0.00, 0.065, 0.055), (-0.035, 0.17, 0.075), (-0.07, 0.215, 0.09), (-0.16, 0.215, 0.095),
+              (-0.35, 0.205, 0.09), (-0.55, 0.205, 0.088), (-0.80, 0.21, 0.09), (-0.95, 0.21, 0.09)]
+GAP = 0.018   # espace entre le corps et le tissu
+# Bras invisibles : (départ x, z), (fin x, z), rayon au départ, rayon à la fin (côté droit, miroir à gauche)
+ARM = ((0.19, -0.10), (0.33, -0.215), 0.045, 0.04)
+
+
+def body_section(z):
+    """Demi-largeur et demi-épaisseur du corps à la hauteur z (m, sous le col)."""
+    if z >= BODY_RINGS[0][0]:
+        return BODY_RINGS[0][1], BODY_RINGS[0][2]
+    for (za, wa, da), (zb, wb, db) in zip(BODY_RINGS, BODY_RINGS[1:]):
+        if za >= z >= zb:
+            t = (za - z) / (za - zb)
+            return wa + (wb - wa) * t, da + (db - da) * t
+    return BODY_RINGS[-1][1], BODY_RINGS[-1][2]
+
+
+def body_depth(x, z):
+    """Demi-épaisseur du corps invisible (torse + bras) au point (x, z) du patron, en mètres ; 0 si hors du corps."""
+    wx, wy = body_section(z)
+    best = wy * math.sqrt(1 - (abs(x) / wx) ** 2) if abs(x) < wx else 0.0
+    (ax, az), (bx, bz), r0, r1 = ARM
+    ax, bx = math.copysign(ax, x), math.copysign(bx, x)
+    dx, dz = bx - ax, bz - az
+    L2 = dx * dx + dz * dz
+    t = ((x - ax) * dx + (z - az) * dz) / L2
+    if 0.0 <= t <= 1.0:
+        r = math.hypot(x - ax - t * dx, z - az - t * dz)
+        R = r0 + (r1 - r0) * t
+        if r < R:
+            best = max(best, math.sqrt(R * R - r * r))
+    return best
+
+
+def dist_to_sewn(bnd, x, z):
+    """Distance (cm) aux coutures (les bords cousus restent à plat)."""
+    best = 1e9
+    n = len(bnd)
+    for k in range(n):
+        if not OUTLINE_SEWN[k]:
+            continue
+        (xa, za), (xb, zb) = SEG_PTS[k]
+        dx, dz = xb - xa, zb - za
+        t = max(0, min(1, ((x - xa) * dx + (z - za) * dz) / (dx * dx + dz * dz + 1e-9)))
+        best = min(best, math.hypot(x - xa - t * dx, z - za - t * dz))
+    return best
+
+
+OUTLINE_SEWN = [sewn for _, sewn in OUTLINE]
+SEG_PTS = [(OUTLINE[k][0], OUTLINE[(k + 1) % len(OUTLINE)][0]) for k in range(len(OUTLINE))]
+
+
 def build_shirt():
     bnd = outline_points()
     poly = [(x, z) for x, z, _ in bnd]
@@ -179,14 +240,21 @@ def build_shirt():
         x, z = verts2d[i].x, verts2d[i].y
         on_border = i in sewn_of
         d = dist_to_poly(poly, x, z)
-        puff = min(1.0, d / 10.0) ** 0.5 * 0.035      # léger volume, nul au bord
+        if A.hanger:
+            puff = min(1.0, d / 10.0) ** 0.5 * 0.035      # léger volume, nul au bord
+            if on_border:
+                puff = 0.004
+        else:
+            # le tissu épouse le corps invisible (torse + bras), toujours au moins GAP au-dessus,
+            # sauf contre les coutures qui restent à plat (le corps est placé sous les coutures)
+            ds = dist_to_sewn(bnd, x, z)
+            puff = body_depth(x * cm, z * cm) + GAP * min(1.0, ds / 2.5)
         if on_border and sewn_of[i]:
             v = bm.verts.new((x * cm, 0.0, z * cm))
             front[i] = back[i] = v
         else:
-            gap = 0.004 if on_border else puff
-            front[i] = bm.verts.new((x * cm, -max(gap, 0.004), z * cm))
-            back[i] = bm.verts.new((x * cm, max(gap, 0.004), z * cm))
+            front[i] = bm.verts.new((x * cm, -max(puff, 0.004), z * cm))
+            back[i] = bm.verts.new((x * cm, max(puff, 0.004), z * cm))
     uv_layer = bm.loops.layers.uv.new("UVMap")
     side_layer = bm.faces.layers.int.new("side")
     for f in faces2d:
@@ -223,6 +291,54 @@ def build_shirt():
 
 shirt = build_shirt()
 shirt.location = (0, 0, 1.55)
+
+
+def build_body():
+    """Mannequin invisible : un torse elliptique un peu plus petit que le t-shirt (collision seulement)."""
+    # (hauteur sous le col, demi-largeur, demi-épaisseur) en mètres
+    rings = BODY_RINGS
+    n = 32
+    bm = bmesh.new()
+    loops = []
+    for z, wx, wy in rings:
+        loops.append([bm.verts.new((wx * math.cos(2 * math.pi * k / n), wy * math.sin(2 * math.pi * k / n), z))
+                      for k in range(n)])
+    for a, b in zip(loops, loops[1:]):
+        for k in range(n):
+            bm.faces.new([a[k], a[(k + 1) % n], b[(k + 1) % n], b[k]])
+    bm.faces.new(loops[0])
+    bm.faces.new(list(reversed(loops[-1])))
+    # bras invisibles : tiennent les manches comme sur un mannequin
+    (ax_, az_), (bx_, bz_), r0, r1 = ARM
+    for sx in (-1, 1):
+        start = Vector((sx * ax_, 0, az_))
+        end = Vector((sx * bx_, 0, bz_))
+        axis = (end - start).normalized()
+        side = axis.cross(Vector((0, 1, 0))).normalized()
+        up = Vector((0, 1, 0))
+        arm = []
+        for t, r in ((0.0, r0), (0.5, (r0 + r1) / 2), (1.0, r1)):
+            c = start + (end - start) * t
+            arm.append([bm.verts.new(c + side * r * math.cos(2 * math.pi * k / 16) + up * r * math.sin(2 * math.pi * k / 16))
+                        for k in range(16)])
+        for a_, b_ in zip(arm, arm[1:]):
+            for k in range(16):
+                bm.faces.new([a_[k], a_[(k + 1) % 16], b_[(k + 1) % 16], b_[k]])
+        bm.faces.new(list(reversed(arm[0]))); bm.faces.new(arm[-1])
+    me = bpy.data.meshes.new("Corps")
+    bm.to_mesh(me); bm.free()
+    ob = bpy.data.objects.new("Corps", me)
+    scene.collection.objects.link(ob)
+    ob.location = shirt.location
+    ob.hide_render = True
+    col = ob.modifiers.new("Collision", "COLLISION")
+    ob.collision.thickness_outer = 0.006
+    ob.collision.cloth_friction = 8.0
+    ob.collision.damping = 0.6
+    return ob
+
+
+body = None if A.hanger else build_body()
 
 # ─────────────────────────── matériau tissu + print ───────────────────────────
 def fabric_material(name, design_path, mirror_u=False):
@@ -304,7 +420,7 @@ shirt.data.materials.append(fabric_material("Dos", A.back, mirror_u=True))
 # ─────────────────────────── physique du tissu ───────────────────────────
 cloth = shirt.modifiers.new("Cloth", "CLOTH")
 s = cloth.settings
-s.quality = 8
+s.quality = 8 if A.preview else 10
 s.mass = A.mass                  # kg par sommet
 s.tension_stiffness = 15
 s.compression_stiffness = 15
@@ -312,7 +428,7 @@ s.shear_stiffness = 5
 s.bending_stiffness = 0.08
 s.air_damping = 1.0
 s.vertex_group_mass = "pin"
-s.use_pressure = True             # donne du volume, comme porté
+s.use_pressure = A.hanger        # sur cintre : la pression donne du volume ; sinon c'est le corps
 s.uniform_pressure_force = 0.6
 s.pressure_factor = 1.0
 s.shrink_min = 0.0
@@ -320,50 +436,62 @@ cs = cloth.collision_settings
 cs.use_self_collision = True
 cs.self_distance_min = 0.004
 cs.distance_min = 0.006
-cs.collision_quality = 3
+cs.collision_quality = 4
+cs.use_collision = True
 total_frames = int(A.seconds * A.fps)
 cloth.point_cache.frame_start = 1
 cloth.point_cache.frame_end = PREROLL + total_frames
-shirt.modifiers.new("Subdiv", "SUBSURF").levels = 1
+subd = shirt.modifiers.new("Subdiv", "SUBSURF")
+subd.levels = 1
+subd.render_levels = 1 if A.preview else 2   # tissu lisse au rendu final
 sol = shirt.modifiers.new("Epaisseur", "SOLIDIFY")
 sol.thickness = 0.0025
 
 # vent : un souffle principal qui varie + turbulence
 bpy.ops.object.effector_add(type="WIND", location=(-1.6, -1.2, 1.3))
 wind = bpy.context.object
-wind.rotation_euler = Vector((0.35, -0.9, 0.2)).to_track_quat("Z", "Y").to_euler()
-# le tissu ne réagit qu'au vent qui le frappe de face : il souffle donc surtout vers la caméra
+WIND_DIR = Vector((0.35, -0.9, 0.2)) if A.hanger else Vector((0.45, 0.85, 0.12))
+wind.rotation_euler = WIND_DIR.to_track_quat("Z", "Y").to_euler()
+# le tissu ne réagit qu'au vent qui le frappe de face. Sur cintre il souffle vers la caméra ;
+# sur le corps il vient de face : le devant se plaque sur le torse, manches et bas claquent derrière.
 wind.field.strength = 0
-wind.field.noise = 3.0
+wind.field.noise = 3.0 if A.hanger else 6.0
 wind.field.seed = 7
-for f, k in ((1, 0.0), (PREROLL - 10, 0.0), (PREROLL + 10, 1.0), (PREROLL + total_frames * 0.45, 1.6),
-             (PREROLL + total_frames * 0.7, 0.8), (PREROLL + total_frames, 1.3)):
-    wind.field.strength = 900 * A.wind * k
+WIND_BASE = 900 if A.hanger else 2600
+gusts = ((0.0, 1.0), (0.12, 1.5), (0.22, 0.9), (0.38, 1.7), (0.5, 1.1), (0.62, 1.8), (0.75, 1.0),
+         (0.88, 1.6), (1.0, 1.2))
+for f, k in [(1, 0.0), (PREROLL - 15, 0.0)] + [(PREROLL + fr * total_frames, k) for fr, k in gusts]:
+    wind.field.strength = WIND_BASE * A.wind * k
     wind.field.keyframe_insert("strength", frame=int(f))
 bpy.ops.object.effector_add(type="TURBULENCE", location=(0, 0, 1.3))
 turb = bpy.context.object
-turb.field.strength = 160 * A.wind
+turb.field.strength = (160 if A.hanger else 450) * A.wind
 turb.field.size = 0.4
 turb.field.flow = 0.5
 
 # ─────────────────────────── cintre ───────────────────────────
-bpy.ops.mesh.primitive_torus_add(major_radius=0.035, minor_radius=0.004, location=(0, 0.0, 1.62))
-hook = bpy.context.object
-hook.rotation_euler = (math.radians(90), 0, 0)
-bpy.ops.curve.primitive_bezier_curve_add(location=(0, 0, 0))
-bar = bpy.context.object
-bar.data.bevel_depth = 0.005
-sp = bar.data.splines[0]
-sp.bezier_points[0].co = (-0.20, 0, 1.52); sp.bezier_points[0].handle_left = (-0.25, 0, 1.50); sp.bezier_points[0].handle_right = (-0.10, 0, 1.56)
-sp.bezier_points[1].co = (0.20, 0, 1.52); sp.bezier_points[1].handle_left = (0.10, 0, 1.56); sp.bezier_points[1].handle_right = (0.25, 0, 1.50)
-metal = bpy.data.materials.new("Metal"); metal.use_nodes = True
-pb = metal.node_tree.nodes["Principled BSDF"]
-pb.inputs["Metallic"].default_value = 1.0; pb.inputs["Roughness"].default_value = 0.25
-pb.inputs["Base Color"].default_value = (0.7, 0.7, 0.72, 1)
-for o in (hook, bar):
-    o.data.materials.append(metal)
-bpy.ops.mesh.primitive_cylinder_add(radius=0.003, depth=0.08, location=(0, 0, 1.585))
-bpy.context.object.data.materials.append(metal)
+def build_hanger():
+    bpy.ops.mesh.primitive_torus_add(major_radius=0.035, minor_radius=0.004, location=(0, 0.0, 1.62))
+    hook = bpy.context.object
+    hook.rotation_euler = (math.radians(90), 0, 0)
+    bpy.ops.curve.primitive_bezier_curve_add(location=(0, 0, 0))
+    bar = bpy.context.object
+    bar.data.bevel_depth = 0.005
+    sp = bar.data.splines[0]
+    sp.bezier_points[0].co = (-0.20, 0, 1.52); sp.bezier_points[0].handle_left = (-0.25, 0, 1.50); sp.bezier_points[0].handle_right = (-0.10, 0, 1.56)
+    sp.bezier_points[1].co = (0.20, 0, 1.52); sp.bezier_points[1].handle_left = (0.10, 0, 1.56); sp.bezier_points[1].handle_right = (0.25, 0, 1.50)
+    metal = bpy.data.materials.new("Metal"); metal.use_nodes = True
+    pb = metal.node_tree.nodes["Principled BSDF"]
+    pb.inputs["Metallic"].default_value = 1.0; pb.inputs["Roughness"].default_value = 0.25
+    pb.inputs["Base Color"].default_value = (0.7, 0.7, 0.72, 1)
+    for o in (hook, bar):
+        o.data.materials.append(metal)
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.003, depth=0.08, location=(0, 0, 1.585))
+    bpy.context.object.data.materials.append(metal)
+
+
+if A.hanger:
+    build_hanger()
 
 # ─────────────────────────── studio : fond, lumières, caméra ───────────────────────────
 bg = hex_rgb(A.bg)
@@ -410,35 +538,76 @@ lights.append(area("Rim2", (-1.0, 0.9, 1.6), 140, 0.6, (0.6, 0.75, 1.0), (0, 0, 
 
 cam_d = bpy.data.cameras.new("Cam"); cam_d.lens = 50
 cam = bpy.data.objects.new("Cam", cam_d); scene.collection.objects.link(cam)
-pivot = bpy.data.objects.new("Pivot", None); scene.collection.objects.link(pivot)
-pivot.location = (0, 0, 1.2)
-cam.parent = pivot
-for lo in lights + [cyclo]:   # lumières et fond tournent avec la caméra : le dos est aussi beau que le devant
-    lo.parent = pivot
-    # matrix_world du pivot n'est pas encore calculé ici : on construit l'inverse à la main
-    lo.matrix_parent_inverse = Matrix.Translation(pivot.location).inverted()
-cam.location = (0, -3.0, 0.05)
-cam.rotation_euler = (math.radians(90), 0, 0)
 scene.camera = cam
-# orbite lente + léger travelling avant
-f0, f1 = PREROLL, PREROLL + total_frames
-if A.turn:
-    # devant pendant ~60 %, demi-tour, puis le dos jusqu'à la fin
-    for frac, deg in ((0.0, -25), (0.58, 12), (0.76, 180), (1.0, 195)):
-        pivot.rotation_euler = (0, 0, math.radians(deg))
-        pivot.keyframe_insert("rotation_euler", frame=int(f0 + frac * total_frames))
-else:
-    pivot.rotation_euler = (0, 0, math.radians(-28)); pivot.keyframe_insert("rotation_euler", frame=f0)
-    pivot.rotation_euler = (0, 0, math.radians(28)); pivot.keyframe_insert("rotation_euler", frame=f1)
-cam.location = (0, -2.6, 0.05); cam.keyframe_insert("location", frame=f0)
-cam.location = (0, -2.1, 0.1); cam.keyframe_insert("location", frame=f1)
-for fc in list(pivot.animation_data.action.fcurves) + list(cam.animation_data.action.fcurves):
-    for kp in fc.keyframe_points:
-        kp.interpolation = "SINE"
-        kp.easing = "EASE_IN_OUT"
+target = bpy.data.objects.new("Cible", None); scene.collection.objects.link(target)
+track = cam.constraints.new("TRACK_TO")
+track.target = target
+track.track_axis = "TRACK_NEGATIVE_Z"
+track.up_axis = "UP_Y"
+# lumières et fond suivent l'angle de la caméra : le dos est aussi bien éclairé que le devant
+rig = bpy.data.objects.new("Rig", None); scene.collection.objects.link(rig)
+for lo in lights + [cyclo]:
+    lo.parent = rig          # rig à l'origine, sans rotation : pas d'inverse à corriger
 cam_d.dof.use_dof = True
-cam_d.dof.focus_object = shirt
+cam_d.dof.focus_object = target
 cam_d.dof.aperture_fstop = 2.8
+
+NECK_Z = shirt.location.z          # hauteur du col
+f0 = PREROLL + 1
+T = A.seconds
+
+
+def pose_key(frame, az, h, dist, lens, tz, tx=0.0, fstop=2.8):
+    """Place la caméra : az = angle autour du t-shirt (0 = face, 180 = dos), h = hauteur au-dessus de
+    la cible, dist = distance, tz = hauteur de la cible sous le col, tx = décalage latéral de la cible."""
+    a = math.radians(az)
+    tgt = Vector((tx * math.cos(a), tx * math.sin(a), NECK_Z - tz))
+    target.location = tgt
+    cam.location = tgt + Vector((dist * math.sin(a), -dist * math.cos(a), h))
+    cam_d.lens = lens
+    cam_d.dof.aperture_fstop = fstop
+    rig.rotation_euler = (0, 0, a)
+    target.keyframe_insert("location", frame=frame)
+    cam.keyframe_insert("location", frame=frame)
+    cam_d.keyframe_insert("lens", frame=frame)
+    cam_d.keyframe_insert("dof.aperture_fstop", frame=frame)
+    rig.keyframe_insert("rotation_euler", frame=frame)
+
+
+if A.orbit:
+    for frac, az in ((0.0, -25), (0.58, 12), (0.76, 180), (1.0, 195)) if A.turn else ((0.0, -28), (1.0, 28)):
+        pose_key(int(f0 + frac * (total_frames - 1)), az, 0.05, 2.6 - 0.4 * frac, 50, 0.36)
+else:
+    # Plans (début s, fin s, pose de départ, pose d'arrivée) pour une pub de 15 s, mis à l'échelle si
+    # --seconds change. pose = (azimut, hauteur, distance, focale, cible sous le col, décalage cible, f/)
+    back = 180 if A.turn else 0
+    SHOTS = [
+        (0.0, 2.2, (-14, 0.05, 2.9, 40, 0.38, 0, 4), (-6, 0.08, 2.4, 40, 0.38, 0, 4)),          # large, travelling avant
+        (2.2, 6.0, (-38, -0.70, 1.75, 30, 0.30, 0, 2.8), (-18, 0.10, 1.6, 30, 0.34, 0, 2.8)),    # contre-plongée, grue
+        (6.0, 8.0, (-6, 0.02, 1.05, 85, 0.20, 0.06, 2.0), (8, 0.0, 0.95, 85, 0.20, 0.06, 2.0)),  # gros plan poitrine
+        (8.0, 10.2, (70, 0.10, 1.6, 35, 0.36, 0, 2.8), (back - 50 if A.turn else 35, 0.15, 1.5, 35, 0.36, 0, 2.8)),  # latéral
+        (10.2, 11.8, (back, 0.05, 1.55, 50, 0.32, 0, 2.2), (back + 4, 0.03, 1.25, 50, 0.32, 0, 2.2)),  # gros plan dos
+        (11.8, 15.0, (back + 22, 0.35, 2.3, 40, 0.62, 0, 4), (back + 34, 0.40, 2.6, 40, 0.62, 0, 4)),  # final, t-shirt en haut
+    ]
+    k = T / 15.0
+    for t0, t1, pa, pb in SHOTS:
+        fa = f0 + int(round(t0 * k * A.fps))
+        fb = max(fa, f0 + int(round(t1 * k * A.fps)) - 1)
+        pose_key(fa, *pa)
+        pose_key(fb, *pb)
+    # coupes franches entre les plans, mouvements doux à l'intérieur
+    for ob in (cam, target, rig, cam_d):
+        for fc in ob.animation_data.action.fcurves:
+            pts = fc.keyframe_points
+            for idx, kp in enumerate(pts):
+                kp.interpolation = "BEZIER" if idx % 2 == 0 else "CONSTANT"
+                kp.handle_left_type = kp.handle_right_type = "AUTO_CLAMPED"
+    # caméra à l'épaule : petit tremblement
+    for fc in cam.animation_data.action.fcurves:
+        nz = fc.modifiers.new("NOISE")
+        nz.strength = 0.012
+        nz.scale = 22
+        nz.phase = fc.array_index * 13.7
 
 # ─────────────────────────── rendu ───────────────────────────
 W, Hh = (int(v) for v in A.res.lower().split("x"))
@@ -448,6 +617,8 @@ if A.engine == "eevee":
     r.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in names else "BLENDER_EEVEE"
     scene.eevee.taa_render_samples = max(16, A.samples)
     scene.eevee.use_shadows = True
+    if hasattr(scene.eevee, "use_raytracing") and not A.preview:
+        scene.eevee.use_raytracing = True      # reflets et ombres de contact plus propres
 else:
     r.engine = "CYCLES"
     prefs = bpy.context.preferences.addons["cycles"].preferences
@@ -457,7 +628,7 @@ else:
             prefs.get_devices()
             if any(d.type != "CPU" for d in prefs.devices):
                 for d in prefs.devices:
-                    d.use = True
+                    d.use = d.type != "CPU"        # carte graphique seule : le processeur la ralentirait
                 scene.cycles.device = "GPU"
                 print(f"[tshirt3d] rendu GPU ({dev_type})", flush=True)
                 break
@@ -469,6 +640,8 @@ else:
 r.resolution_x, r.resolution_y = W, Hh
 r.fps = A.fps
 r.film_transparent = False
+r.use_motion_blur = True        # flou de mouvement : manches et caméra plus naturelles
+r.motion_blur_shutter = 0.5
 scene.view_settings.view_transform = "Standard"   # couleurs de marque fidèles
 scene.view_settings.look = "Medium High Contrast"
 scene.view_settings.exposure = A.exposure

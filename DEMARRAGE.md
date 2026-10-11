@@ -24,32 +24,36 @@ Ouvre ensuite `design\produit.json` pour changer le nom, le prix et les textes. 
 ## 4. Lancer
 | Fichier | Ce qu'il fait | Durée estimée sur ton PC* |
 |---|---|---|
-| `TEST_RAPIDE.bat` | 540×960, EEVEE : vérifie que tout marche | ~5 à 10 min |
-| `LANCER_PUB3D.bat` | 1080×1920, EEVEE : la vraie pub | ~10 à 20 min |
-| `LANCER_PUB3D.bat --final` | 1080×1920, Cycles sur la carte graphique (HIP) : qualité max | ~40 à 90 min |
+| `TEST_RAPIDE.bat` | 540×960, EEVEE : **seulement pour vérifier le cadrage**. C'est volontairement basse définition, donc pixelisé | ~5 min |
+| `LANCER_PUB3D.bat --fast` | 1080×1920, EEVEE : propre, rapide | ~10 à 15 min |
+| `LANCER_PUB3D.bat` | 1080×1920, **Cycles sur la carte graphique, 128 échantillons, maillage fin** : la qualité maximale | ~30 min à 1 h |
 
-\* Ce sont des estimations, je n'ai pas pu mesurer sur ta machine. La simulation du tissu tourne sur le processeur (quelques minutes), le rendu sur la carte graphique.
+\* Ce sont des estimations, je n'ai pas pu mesurer sur ta machine.
 
 Le résultat sort dans `out\pub3d_test.mp4` ou `out\pub3d.mp4`.
 
 En ligne de commande, tu peux aussi faire :
 ```
 python pub3d.py --front design\devant.png --back design\dos.png --config design\produit.json --music ma_musique.mp3
-python pub3d.py ... --skip-3d    # garde la 3D déjà rendue, ne refait que le montage (quelques minutes)
-python pub3d.py ... --wind 1.5   # plus de vent
+python pub3d.py ... --skip-3d       # garde la 3D déjà rendue, ne refait que le montage (quelques minutes)
+python pub3d.py ... --wind 1.5      # encore plus de vent (0.5 = brise)
+python pub3d.py ... --samples 256   # encore plus propre (plus long)
+python pub3d.py ... --hanger        # sur un cintre au lieu du corps invisible
 ```
 
 ## Ce que contient la vidéo (15 s)
 | Temps | Scène |
 |---|---|
-| 0 – 2,2 s | Accroche glitch (« CE T-SHIRT / CACHE UN / MESSAGE ») sur la 3D floutée |
-| 2,2 – 6 s | La 3D apparaît : t-shirt au vent, vu de face, avec le nom du produit |
-| 6 – 10,2 s | Trois cartes qui alternent gauche/droite, pendant que la caméra fait le tour vers le dos |
-| 10,2 – 11,8 s | Zoom sur le dos et la spirale |
-| 11,8 – 15 s | Prix barré, nouveau prix, stock, bouton COMMANDER |
+| 0 – 2,2 s | Accroche glitch sur la 3D floutée (plan large, travelling avant) |
+| 2,2 – 6 s | Contre-plongée qui monte : le t-shirt porté par un corps invisible, en plein vent |
+| 6 – 8 s | Gros plan sur la poitrine (le print devant) |
+| 8 – 10,2 s | Plan latéral : les manches et le bas claquent, la caméra part vers le dos |
+| 10,2 – 11,8 s | Gros plan sur le dos |
+| 11,8 – 15 s | Plan final en hauteur : prix, stock, bouton COMMANDER |
 
 ## Si ça coince
 - **« Blender introuvable »** : ajoute `--blender "C:\chemin\vers\blender.exe"` à la commande.
-- **Rendu très lent avec `--final`** : dans Blender, va dans Édition > Préférences > Système > Cycles, choisis HIP et vérifie que la RX 6650 XT est cochée. Sinon, mets à jour le pilote AMD.
+- **Rendu très lent avec `LANCER_PUB3D.bat`** : dans Blender, va dans Édition > Préférences > Système > Cycles, choisis HIP et vérifie que la RX 6650 XT est cochée. Sinon, mets à jour le pilote AMD.
 - **Le t-shirt bouge trop ou pas assez** : change `--wind` (0,5 à 2).
+- **Le tissu traverse le corps ou part dans tous les sens** : baisse le vent (`--wind 0.7`), et envoie-moi une image.
 - **Le print est trop grand ou mal placé** : change `--print-size` (largeur de la zone d'impression en mètres, 0,30 par défaut) et `--print-top` (distance en cm entre le col et le haut de la zone, 7 par défaut).

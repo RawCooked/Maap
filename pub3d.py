@@ -3,7 +3,7 @@
 pub3d.py - une commande : tes designs → t-shirt 3D au vent (Blender) → pub verticale montée.
 
     python pub3d.py --front design/3.png --back design/4.png
-    python pub3d.py --front design/3.png --back design/4.png --final      # qualité max (Cycles)
+    python pub3d.py --front design/3.png --back design/4.png --fast       # EEVEE, quelques minutes
     python pub3d.py --front d.png --config produit.json --preview         # test rapide
 
 Étapes :
@@ -90,8 +90,11 @@ def main():
     ap.add_argument("--print-top", type=float, default=7.0, help="cm entre le col et le haut de la zone")
     ap.add_argument("--wind", type=float, default=1.0)
     ap.add_argument("--blender", help="chemin de blender.exe")
-    ap.add_argument("--final", action="store_true", help="Cycles, 1080x1920, 96 échantillons (lent, plus beau)")
-    ap.add_argument("--preview", action="store_true", help="540x960, rapide, pour vérifier")
+    ap.add_argument("--samples", type=int, default=128, help="qualité Cycles (128 par défaut)")
+    ap.add_argument("--fast", action="store_true", help="EEVEE en 1080x1920 : quelques minutes, un peu moins beau")
+    ap.add_argument("--preview", action="store_true", help="540x960 EEVEE : juste pour vérifier le cadrage")
+    ap.add_argument("--hanger", action="store_true", help="t-shirt sur un cintre (par défaut : porté par un corps invisible)")
+    ap.add_argument("--orbit", action="store_true", help="caméra en simple rotation au lieu des plans")
     ap.add_argument("--skip-3d", action="store_true", help="réutilise le rendu 3D existant")
     ap.add_argument("--out", default="out/pub3d.mp4")
     A = ap.parse_args()
@@ -120,12 +123,16 @@ def main():
                "--wind", str(A.wind), "--seconds", str(seconds), "--out", str(clip)]
         if back:
             cmd += ["--back", str(back)]
-        if A.final:
-            cmd += ["--engine", "cycles", "--samples", "96"]
-        else:
-            cmd += ["--engine", "eevee", "--samples", "32"]
         if A.preview:
-            cmd += ["--preview"]
+            cmd += ["--engine", "eevee", "--samples", "16", "--preview"]
+        elif A.fast:
+            cmd += ["--engine", "eevee", "--samples", "64"]
+        else:                                   # qualité : Cycles sur la carte graphique, Full HD vertical
+            cmd += ["--engine", "cycles", "--samples", str(A.samples)]
+        if A.hanger:
+            cmd += ["--hanger"]
+        if A.orbit:
+            cmd += ["--orbit"]
         print("[pub3d] Blender :", " ".join(f'"{c}"' if " " in c else c for c in cmd))
         t0 = time.time()
         if clip.exists():

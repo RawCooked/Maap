@@ -596,7 +596,7 @@ class Ad:
             im = Image.blend(Image.new("RGB", src.size, (0, 0, 0)), blur, 0.35 + 0.65 * k).convert("RGBA")
         elif T_FEAT_END <= t < T_ZOOM_END:                     # zoom dans l'image 3D
             k = ease_in_out(prog(t, T_FEAT_END, T_FEAT_END + 0.6)) * (1 - ease_in_out(prog(t, T_ZOOM_END - 0.3, T_ZOOM_END)))
-            z = 1 + 0.45 * k
+            z = 1 + 0.15 * k            # léger : la caméra 3D fait déjà les gros plans
             w, h = int(Ctx.W / z), int(Ctx.H / z)
             cx, cy = Ctx.W // 2, int(Ctx.H * 0.47)
             box = (cx - w // 2, max(0, cy - h // 2), cx + w // 2, max(0, cy - h // 2) + h)
