@@ -623,13 +623,15 @@ else:
     r.engine = "CYCLES"
     gpu_found = False
     prefs = bpy.context.preferences.addons["cycles"].preferences
-    for dev_type in ("OPTIX", "CUDA", "HIP", "METAL", "ONEAPI"):   # carte graphique si dispo
+    # OptiX/CUDA = NVIDIA, HIP = AMD, Metal = Mac, oneAPI = Intel. On ne garde un type que s'il a
+    # vraiment une carte de ce type (sinon Cycles retombe en silence sur le processeur).
+    for dev_type in ("OPTIX", "CUDA", "HIP", "METAL", "ONEAPI"):
         try:
             prefs.compute_device_type = dev_type
             prefs.get_devices()
-            if any(d.type != "CPU" for d in prefs.devices):
+            if any(d.type == dev_type for d in prefs.devices):
                 for d in prefs.devices:
-                    d.use = d.type != "CPU"        # carte graphique seule : le processeur la ralentirait
+                    d.use = d.type == dev_type      # carte graphique seule : le processeur la ralentirait
                 scene.cycles.device = "GPU"
                 names = ", ".join(d.name for d in prefs.devices if d.use)
                 print(f"[tshirt3d] rendu GPU ({dev_type}) : {names}", flush=True)
