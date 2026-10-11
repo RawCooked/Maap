@@ -1,3 +1,6 @@
 out/
 __pycache__/
 design/*.png
+musique/*.mp3
+musique/*.wav
+musique/*.m4a

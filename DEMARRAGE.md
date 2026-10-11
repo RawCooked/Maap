@@ -42,7 +42,20 @@ Ouvre ensuite `design\produit.json` pour changer le nom, le prix et les textes. 
 
 **Pour l'imprimeur** : la plupart demandent environ **300 dpi**, soit **3543 × 4606 px** pour 30 × 39 cm, en PNG transparent. Garde les mêmes proportions que le gabarit : le placement dans la vidéo reste identique. Demande-lui sa zone maximale et la distance sous le col (souvent 7 à 10 cm), et ajuste si besoin avec `--print-size` et `--print-top`.
 
-## 4. Lancer
+## 4. Les trois animations : brouillon d'abord, version lourde ensuite
+| Lanceur | Animation |
+|---|---|
+| `ANIM1_VENT.bat` | Le t-shirt porté par un corps invisible, en plein vent, filmé en 6 plans (contre-plongée, gros plans, dos) |
+| `ANIM2_CHUTE.bat` | Le t-shirt flotte, puis tombe et se drape sur un socle ; vue de dessus sur le print |
+| `ANIM3_VITRINE.bat` | Le t-shirt porté, sans vent, la caméra en fait le tour complet ; les reflets glissent sur le tissu |
+
+1. **Double-clic** sur le lanceur : simulation du tissu + **brouillon** EEVEE en Full HD (`out\<anim>_brouillon.mp4`). La simulation est **enregistrée** dans `out\work\scene_<anim>.blend`.
+2. Si le brouillon te plaît : **`ANIM1_VENT.bat --final`** (ou `ANIM2_CHUTE.bat --final`, `ANIM3_VITRINE.bat --final`). La version lourde (Cycles sur la carte graphique) **rouvre la scène déjà simulée** et ne fait que le rendu.
+3. Tant que tu ne changes ni le design, ni la couleur, ni le vent, la simulation n'est jamais refaite. `--resim` force une nouvelle simulation.
+
+**Musique :** mets tes MP3 libres de droits dans `musique\` (`musique\vent.mp3`, `musique\chute.mp3`, `musique\vitrine.mp3`, ou un seul MP3 pour toutes). Sans MP3, un beat est généré.
+
+## 4 bis. Autres lanceurs
 | Fichier | Ce qu'il fait | Durée estimée sur ton PC* |
 |---|---|---|
 | `APERCU.bat` | Aperçu à plat du placement + gabarit, sans Blender | ~1 s |

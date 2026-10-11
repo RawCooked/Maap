@@ -44,6 +44,9 @@ import bpy
 from mathutils import Matrix, Vector
 from mathutils.geometry import delaunay_2d_cdt
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import render_part  # noqa: E402
+
 # ─────────────────────────── arguments ───────────────────────────
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 ap = argparse.ArgumentParser()
@@ -70,12 +73,27 @@ ap.add_argument("--sim-only", action="store_true")
 ap.add_argument("--mass", type=float, default=0.02)
 ap.add_argument("--every", type=int, default=1, help="ne rend qu'une image sur N (tests)")
 ap.add_argument("--check", action="store_true", help="vérification : 8 images basse définition, pas de vidéo")
+ap.add_argument("--anim", choices=["vent", "chute", "vitrine"], default="vent",
+                help="vent : porté, en plein vent, 6 plans ; chute : tombe et se drape sur un socle ; "
+                     "vitrine : porté, sans vent, la caméra en fait le tour")
+ap.add_argument("--blend", help="enregistre la scène simulée ici (pour un rendu final sans re-simuler)")
+ap.add_argument("--render-only", action="store_true",
+                help="rend la scène .blend ouverte par Blender (déjà simulée) sans la reconstruire")
 A = ap.parse_args(argv)
 if A.check:
     A.preview = True
     A.engine = "eevee"
 if A.preview:
     A.res, A.samples = "540x960", 16
+
+if A.render_only:
+    # blender -b out/work/scene_<anim>.blend -P tshirt3d.py -- --render-only ... : la simulation est
+    # déjà sur le disque (blendcache_...), on ne fait que régler le moteur et rendre.
+    sc = bpy.context.scene
+    render_part.render_animation(sc, A, int(sc["preroll"]), int(sc["total_frames"]))
+    sys.exit(0)
+
+FLAT = A.hanger or A.anim == "chute"   # patron plat (cintre, chute) ; sinon gonflé autour du corps invisible
 
 PREROLL = 45  # images de simulation avant le début de la vidéo (le tissu se met en place)
 
@@ -246,7 +264,7 @@ def build_shirt():
         x, z = verts2d[i].x, verts2d[i].y
         on_border = i in sewn_of
         d = dist_to_poly(poly, x, z)
-        if A.hanger:
+        if FLAT:
             puff = min(1.0, d / 10.0) ** 0.5 * 0.035      # léger volume, nul au bord
             if on_border:
                 puff = 0.004
@@ -344,7 +362,25 @@ def build_body():
     return ob
 
 
-body = None if A.hanger else build_body()
+body = None if FLAT else build_body()
+
+if A.anim == "chute":
+    # le t-shirt est à plat, devant vers le haut, au-dessus d'un socle ; il tombe quand la gravité arrive
+    shirt.rotation_euler = (math.radians(-90), 0, 0)
+    shirt.location = (0, 0.36, 1.45)
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.32, depth=0.95, vertices=96, location=(0, 0, 0.475))
+    socle = bpy.context.object
+    for p_ in socle.data.polygons:
+        p_.use_smooth = True
+    bev = socle.modifiers.new("Arrondi", "BEVEL"); bev.width = 0.012; bev.segments = 4
+    socle.modifiers.new("Collision", "COLLISION")
+    socle.collision.thickness_outer = 0.006
+    socle.collision.cloth_friction = 6.0
+    sm = bpy.data.materials.new("Socle"); sm.use_nodes = True
+    sb = sm.node_tree.nodes["Principled BSDF"]
+    sb.inputs["Base Color"].default_value = (0.03, 0.03, 0.035, 1)
+    sb.inputs["Roughness"].default_value = 0.35
+    socle.data.materials.append(sm)
 
 # ─────────────────────────── matériau tissu + print ───────────────────────────
 def fabric_material(name, design_path, mirror_u=False):
@@ -433,13 +469,16 @@ s.compression_stiffness = 15
 s.shear_stiffness = 5
 s.bending_stiffness = 0.08
 s.air_damping = 1.0 if A.hanger else 1.6
-s.vertex_group_mass = "pin"
+s.vertex_group_mass = "" if A.anim == "chute" else "pin"   # la chute n'est tenue par rien
 s.use_pressure = A.hanger        # sur cintre : la pression donne du volume ; sinon c'est le corps
 s.uniform_pressure_force = 0.6
 s.pressure_factor = 1.0
 s.shrink_min = 0.0
 cs = cloth.collision_settings
-cs.use_self_collision = True
+# collision du tissu sur lui-même : c'est elle qui faisait passer la simulation de 0,5 à 13 s par image.
+# Sur le corps invisible, le torse sépare déjà le devant du dos : inutile. Gardée pour la chute (le tissu
+# s'y replie vraiment) et le cintre.
+cs.use_self_collision = FLAT
 cs.self_distance_min = 0.004
 cs.distance_min = 0.006
 cs.collision_quality = 3
@@ -447,6 +486,15 @@ cs.use_collision = True
 total_frames = int(A.seconds * A.fps)
 cloth.point_cache.frame_start = 1
 cloth.point_cache.frame_end = PREROLL + total_frames
+if A.anim == "chute":
+    # en apesanteur pendant l'accroche, puis la gravité revient à 2 s : le t-shirt tombe sur le socle
+    f_drop = PREROLL + int(2.0 * A.fps * A.seconds / 15.0)
+    for f_, g in ((1, 0.0), (f_drop - 1, 0.0), (f_drop, -9.81)):
+        scene.gravity = (0.0, 0.0, g)
+        scene.keyframe_insert("gravity", frame=f_)
+    for fc in scene.animation_data.action.fcurves:
+        for kp in fc.keyframe_points:
+            kp.interpolation = "CONSTANT"
 subd = shirt.modifiers.new("Subdiv", "SUBSURF")
 subd.levels = 1
 subd.render_levels = 1   # niveau 2 multipliait le maillage par ~30 : le processeur le reconstruisait à chaque image
@@ -464,6 +512,8 @@ wind.field.strength = 0
 wind.field.noise = 3.0
 wind.field.seed = 7
 WIND_BASE = 900 if A.hanger else 700    # 2600 retroussait le t-shirt en boule sur les épaules
+if A.anim in ("chute", "vitrine"):
+    WIND_BASE = 0                       # pas de vent : le tissu tombe ou reste posé
 gusts = ((0.0, 1.0), (0.12, 1.5), (0.22, 0.9), (0.38, 1.7), (0.5, 1.1), (0.62, 1.8), (0.75, 1.0),
          (0.88, 1.6), (1.0, 1.2))
 for f, k in [(1, 0.0), (PREROLL - 15, 0.0)] + [(PREROLL + fr * total_frames, k) for fr, k in gusts]:
@@ -471,7 +521,7 @@ for f, k in [(1, 0.0), (PREROLL - 15, 0.0)] + [(PREROLL + fr * total_frames, k) 
     wind.field.keyframe_insert("strength", frame=int(f))
 bpy.ops.object.effector_add(type="TURBULENCE", location=(0, 0, 1.3))
 turb = bpy.context.object
-turb.field.strength = 160 * A.wind
+turb.field.strength = 0 if A.anim in ("chute", "vitrine") else 160 * A.wind
 turb.field.size = 0.4
 turb.field.flow = 0.5
 
@@ -552,7 +602,8 @@ track.track_axis = "TRACK_NEGATIVE_Z"
 track.up_axis = "UP_Y"
 # lumières et fond suivent l'angle de la caméra : le dos est aussi bien éclairé que le devant
 rig = bpy.data.objects.new("Rig", None); scene.collection.objects.link(rig)
-for lo in lights + [cyclo]:
+# (vitrine : lumières fixes, pour que les reflets glissent sur le tissu pendant le tour)
+for lo in ([cyclo] if A.anim == "vitrine" else lights + [cyclo]):
     lo.parent = rig          # rig à l'origine, sans rotation : pas d'inverse à corriger
 cam_d.dof.use_dof = True
 cam_d.dof.focus_object = target
@@ -580,27 +631,54 @@ def pose_key(frame, az, h, dist, lens, tz, tx=0.0, fstop=2.8):
     rig.keyframe_insert("rotation_euler", frame=frame)
 
 
-if A.orbit:
-    for frac, az in ((0.0, -25), (0.58, 12), (0.76, 180), (1.0, 195)) if A.turn else ((0.0, -28), (1.0, 28)):
-        pose_key(int(f0 + frac * (total_frames - 1)), az, 0.05, 2.6 - 0.4 * frac, 50, 0.36)
-else:
-    # Plans (début s, fin s, pose de départ, pose d'arrivée) pour une pub de 15 s, mis à l'échelle si
-    # --seconds change. pose = (azimut, hauteur, distance, focale, cible sous le col, décalage cible, f/)
-    back = 180 if A.turn else 0
-    SHOTS = [
-        (0.0, 2.2, (-14, 0.05, 2.9, 40, 0.38, 0, 4), (-6, 0.08, 2.4, 40, 0.38, 0, 4)),          # large, travelling avant
-        (2.2, 6.0, (-38, -0.70, 1.75, 30, 0.30, 0, 2.8), (-18, 0.10, 1.6, 30, 0.34, 0, 2.8)),    # contre-plongée, grue
-        (6.0, 8.0, (-6, 0.02, 1.05, 85, 0.20, 0.06, 2.0), (8, 0.0, 0.95, 85, 0.20, 0.06, 2.0)),  # gros plan poitrine
-        (8.0, 10.2, (70, 0.10, 1.6, 35, 0.36, 0, 2.8), (back - 50 if A.turn else 35, 0.15, 1.5, 35, 0.36, 0, 2.8)),  # latéral
-        (10.2, 11.8, (back, 0.05, 1.55, 50, 0.32, 0, 2.2), (back + 4, 0.03, 1.25, 50, 0.32, 0, 2.2)),  # gros plan dos
-        (11.8, 15.0, (back + 22, 0.35, 2.3, 40, 0.62, 0, 4), (back + 34, 0.40, 2.6, 40, 0.62, 0, 4)),  # final, t-shirt en haut
-    ]
+def add_shots(shots):
     k = T / 15.0
-    for t0, t1, pa, pb in SHOTS:
+    for t0, t1, pa, pb in shots:
         fa = f0 + int(round(t0 * k * A.fps))
         fb = max(fa, f0 + int(round(t1 * k * A.fps)) - 1)
         pose_key(fa, *pa)
         pose_key(fb, *pb)
+
+
+back = 180 if A.turn else 0
+if A.orbit or A.anim == "vitrine":
+    if A.anim == "vitrine":
+        # un tour complet, lent, avec une légère montée et un rapprochement
+        n = 9
+        for i in range(n):
+            fr = i / (n - 1)
+            pose_key(int(f0 + fr * (total_frames - 1)), -20 + 360 * fr, 0.05 + 0.25 * fr, 2.3 - 0.5 * fr, 40, 0.36,
+                     0, 3.2)
+    else:
+        for frac, az in ((0.0, -25), (0.58, 12), (0.76, 180), (1.0, 195)) if A.turn else ((0.0, -28), (1.0, 28)):
+            pose_key(int(f0 + frac * (total_frames - 1)), az, 0.05, 2.6 - 0.4 * frac, 50, 0.36)
+    for ob in (cam, target, rig, cam_d):
+        for fc in ob.animation_data.action.fcurves:
+            for kp in fc.keyframe_points:
+                kp.interpolation = "BEZIER"
+                kp.handle_left_type = kp.handle_right_type = "AUTO_CLAMPED"
+else:
+    # Plans (début s, fin s, pose de départ, pose d'arrivée) pour une pub de 15 s, mis à l'échelle si
+    # --seconds change. pose = (azimut, hauteur, distance, focale, cible sous le col, décalage cible, f/)
+    if A.anim == "chute":
+        # col à 1,45 m au départ ; dessus du socle à 0,95 m
+        add_shots([
+            (0.0, 2.2, (-20, 0.10, 3.0, 40, 0.30, 0, 4), (-12, 0.15, 2.6, 40, 0.30, 0, 4)),        # flotte, travelling avant
+            (2.2, 5.0, (25, 0.35, 2.3, 35, 0.45, 0, 2.8), (15, 0.30, 2.1, 35, 0.50, 0, 2.8)),      # la chute
+            (5.0, 8.0, (0, 1.20, 0.35, 50, 0.48, 0, 2.2), (8, 1.10, 0.30, 50, 0.48, 0, 2.2)),      # vue du dessus : le print
+            (8.0, 10.2, (70, 0.05, 1.6, 35, 0.52, 0, 2.8), (120, 0.08, 1.5, 35, 0.52, 0, 2.8)),    # rasant, les plis
+            (10.2, 11.8, (160, 0.30, 1.0, 85, 0.55, 0, 2.0), (172, 0.28, 0.9, 85, 0.55, 0, 2.0)),  # détail du drapé
+            (11.8, 15.0, (-30, 1.00, 2.6, 40, 0.75, 0, 4), (-45, 1.10, 2.8, 40, 0.75, 0, 4)),      # final en hauteur
+        ])
+    else:
+        add_shots([
+            (0.0, 2.2, (-14, 0.05, 2.9, 40, 0.38, 0, 4), (-6, 0.08, 2.4, 40, 0.38, 0, 4)),          # large, travelling avant
+            (2.2, 6.0, (-38, -0.70, 1.75, 30, 0.30, 0, 2.8), (-18, 0.10, 1.6, 30, 0.34, 0, 2.8)),    # contre-plongée, grue
+            (6.0, 8.0, (-6, 0.02, 1.05, 85, 0.20, 0.06, 2.0), (8, 0.0, 0.95, 85, 0.20, 0.06, 2.0)),  # gros plan poitrine
+            (8.0, 10.2, (70, 0.10, 1.6, 35, 0.36, 0, 2.8), (back - 50 if A.turn else 35, 0.15, 1.5, 35, 0.36, 0, 2.8)),
+            (10.2, 11.8, (back, 0.05, 1.55, 50, 0.32, 0, 2.2), (back + 4, 0.03, 1.25, 50, 0.32, 0, 2.2)),  # dos
+            (11.8, 15.0, (back + 22, 0.35, 2.3, 40, 0.62, 0, 4), (back + 34, 0.40, 2.6, 40, 0.62, 0, 4)),  # final
+        ])
     # coupes franches entre les plans, mouvements doux à l'intérieur
     for ob in (cam, target, rig, cam_d):
         for fc in ob.animation_data.action.fcurves:
@@ -615,76 +693,52 @@ else:
         nz.scale = 22
         nz.phase = fc.array_index * 13.7
 
-# ─────────────────────────── rendu ───────────────────────────
-W, Hh = (int(v) for v in A.res.lower().split("x"))
-r = scene.render
-if A.engine == "eevee":
-    names = [e.identifier for e in bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items]
-    r.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in names else "BLENDER_EEVEE"
-    scene.eevee.taa_render_samples = max(16, A.samples)
-    scene.eevee.use_shadows = True
-    if hasattr(scene.eevee, "use_raytracing") and not A.preview:
-        scene.eevee.use_raytracing = True      # reflets et ombres de contact plus propres
-else:
-    r.engine = "CYCLES"
-    gpu_found = False
-    prefs = bpy.context.preferences.addons["cycles"].preferences
-    # OptiX/CUDA = NVIDIA, HIP = AMD, Metal = Mac, oneAPI = Intel. On ne garde un type que s'il a
-    # vraiment une carte de ce type (sinon Cycles retombe en silence sur le processeur).
-    for dev_type in ("OPTIX", "CUDA", "HIP", "METAL", "ONEAPI"):
-        try:
-            prefs.compute_device_type = dev_type
-            prefs.get_devices()
-            if any(d.type == dev_type for d in prefs.devices):
-                for d in prefs.devices:
-                    d.use = d.type == dev_type      # carte graphique seule : le processeur la ralentirait
-                scene.cycles.device = "GPU"
-                names = ", ".join(d.name for d in prefs.devices if d.use)
-                print(f"[tshirt3d] rendu GPU ({dev_type}) : {names}", flush=True)
-                gpu_found = True
-                break
-        except Exception:
-            continue
-    scene.cycles.samples = A.samples
-    scene.cycles.use_denoising = True
-    scene.cycles.max_bounces = 4
-    if hasattr(scene.cycles, "denoising_use_gpu"):
-        scene.cycles.denoising_use_gpu = True     # débruitage sur la carte graphique, pas sur le processeur
-    if not gpu_found:
-        # Cycles sur le processeur = plusieurs minutes par image (une journée pour la vidéo).
-        # On bascule sur EEVEE, qui passe par la carte graphique via le pilote d'affichage.
-        print("[tshirt3d] ATTENTION : aucune carte graphique trouvée pour Cycles (pilote AMD ? HIP ?).", flush=True)
-        print("[tshirt3d] Bascule automatique sur EEVEE pour éviter un rendu de plusieurs heures.", flush=True)
-        names = [e.identifier for e in bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items]
-        r.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in names else "BLENDER_EEVEE"
-        scene.eevee.taa_render_samples = 64
-        if hasattr(scene.eevee, "use_raytracing"):
-            scene.eevee.use_raytracing = True
-r.resolution_x, r.resolution_y = W, Hh
-r.fps = A.fps
-r.film_transparent = False
-r.use_persistent_data = True    # garde fond, lumières et textures en mémoire entre les images
-# flou de mouvement : léger en EEVEE ; coupé en Cycles où il multiplie le temps de rendu du tissu
-r.use_motion_blur = r.engine != "CYCLES"
-r.motion_blur_shutter = 0.5
-scene.view_settings.view_transform = "Standard"   # couleurs de marque fidèles
-scene.view_settings.look = "Medium High Contrast"
-scene.view_settings.exposure = A.exposure
+# ─────────────────────────── simulation, enregistrée avec la scène ───────────────────────────
 scene.frame_start = 1
 scene.frame_end = PREROLL + total_frames
+scene["preroll"] = PREROLL
+scene["total_frames"] = total_frames
+render_part.setup_engine(scene, A)
 
 if A.save_blend:
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(A.save_blend))
 
-# simulation (doit passer image par image depuis le début)
-print(f"[tshirt3d] simulation du tissu : {PREROLL + total_frames} images…", flush=True)
-t_sim = time.time()
 n_sim = PREROLL + total_frames
-for f in range(1, n_sim + 1):
-    scene.frame_set(f)
-    if f % 20 == 0:
+t_sim = time.time()
+print(f"[tshirt3d] simulation du tissu ({A.anim}) : {n_sim} images…", flush=True)
+
+
+def _sim_progress(sc, _dg=None):
+    f = sc.frame_current
+    if f % 20 == 0 and f > 0:
         el = time.time() - t_sim
-        print(f"[tshirt3d]   sim {f}/{n_sim}  ({el / f:.1f} s/image, reste ~{el / f * (n_sim - f) / 60:.0f} min)", flush=True)
+        print(f"[tshirt3d]   sim {f}/{n_sim}  ({el / f:.1f} s/image, reste ~{el / f * (n_sim - f) / 60:.0f} min)",
+              flush=True)
+
+
+baked = False
+if A.blend:
+    # La simulation est « cuite » sur le disque à côté du .blend (dossier blendcache_...). La version
+    # finale rouvre ce .blend avec --render-only et ne refait pas la simulation.
+    try:
+        blend = os.path.abspath(A.blend)
+        os.makedirs(os.path.dirname(blend), exist_ok=True)
+        cloth.point_cache.use_disk_cache = True
+        bpy.ops.wm.save_as_mainfile(filepath=blend)
+        bpy.app.handlers.frame_change_post.append(_sim_progress)
+        bpy.ops.ptcache.bake_all(bake=True)
+        bpy.app.handlers.frame_change_post.remove(_sim_progress)
+        bpy.ops.wm.save_mainfile()
+        baked = True
+        print(f"[tshirt3d] simulation enregistrée avec la scène : {blend}", flush=True)
+    except Exception as e:  # on retombe sur la simulation en mémoire
+        print(f"[tshirt3d] simulation non enregistrée ({e}) ; la version finale la refera.", flush=True)
+        if _sim_progress in bpy.app.handlers.frame_change_post:
+            bpy.app.handlers.frame_change_post.remove(_sim_progress)
+if not baked:
+    for f in range(1, n_sim + 1):
+        scene.frame_set(f)
+        _sim_progress(scene)
 print(f"[tshirt3d] simulation terminée en {(time.time() - t_sim) / 60:.1f} min", flush=True)
 
 if A.sim_only:
@@ -695,48 +749,5 @@ if A.sim_only:
         ys = [v.co.y for v in me.vertices]; xs = [v.co.x for v in me.vertices]; zs = [v.co.z for v in me.vertices]
         print(f"[sim] f{f} x[{min(xs):.2f},{max(xs):.2f}] y[{min(ys):.2f},{max(ys):.2f}] z[{min(zs):.2f},{max(zs):.2f}]", flush=True)
     sys.exit(0)
-out = os.path.abspath(A.out)
-frames_dir = os.path.splitext(out)[0] + "_frames"
-os.makedirs(frames_dir, exist_ok=True)
-r.image_settings.file_format = "PNG"
-for old in os.listdir(frames_dir):
-    if old.endswith(".png"):
-        os.remove(os.path.join(frames_dir, old))
-# rendu de toute l'animation en un seul appel : Blender ne recharge pas la scène à chaque image
-scene.frame_start = PREROLL + 1
-scene.frame_end = PREROLL + total_frames
-if A.check:
-    A.every = max(1, total_frames // 8)
-scene.frame_step = A.every
-r.filepath = os.path.join(frames_dir, "f_")
-n_total = len(range(scene.frame_start, scene.frame_end + 1, A.every))
-done = [0]
 
-
-t_render = [time.time()]
-
-
-def _progress(_scene, _depsgraph=None):
-    done[0] += 1
-    el = time.time() - t_render[0]
-    per = el / done[0]
-    print(f"[tshirt3d] rendu {done[0]}/{n_total}  ({per:.1f} s/image, reste ~{per * (n_total - done[0]) / 60:.0f} min)",
-          flush=True)
-
-
-bpy.app.handlers.render_write.append(_progress)
-print(f"[tshirt3d] rendu : {r.engine}, {W}x{Hh}, {n_total} images", flush=True)
-t_render[0] = time.time()
-bpy.ops.render.render(animation=True)
-# renumérote 0000, 0001, ... pour ffmpeg
-for i, name in enumerate(sorted(n for n in os.listdir(frames_dir) if n.startswith("f_"))):
-    os.replace(os.path.join(frames_dir, name), os.path.join(frames_dir, f"{i:04d}.png"))
-
-ff = os.environ.get("FFMPEG") or shutil.which("ffmpeg")
-if ff:
-    subprocess.run([ff, "-y", "-loglevel", "error", "-framerate", str(A.fps // A.every or 1), "-i",
-                    os.path.join(frames_dir, "%04d.png"), "-c:v", "libx264", "-crf", "17",
-                    "-pix_fmt", "yuv420p", "-movflags", "+faststart", out], check=True)
-    print(f"[tshirt3d] OK -> {out}")
-else:
-    print(f"[tshirt3d] ffmpeg introuvable : images dans {frames_dir}")
+render_part.render_animation(scene, A, PREROLL, total_frames)

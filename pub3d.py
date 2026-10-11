@@ -81,6 +81,23 @@ def prepare_design(src: str, dst: Path) -> tuple[str | None, Path]:
     return "#%02X%02X%02X" % tuple(int(round(c)) for c in bg), dst
 
 
+def file_sig(path) -> list:
+    """Empreinte légère d'un fichier (taille + date) pour savoir s'il a changé."""
+    st = Path(path).stat()
+    return [Path(path).name, st.st_size, int(st.st_mtime)]
+
+
+def find_music(anim: str):
+    """musique/<anim>.mp3 (ou .wav), sinon le premier MP3 de musique/, sinon rien (beat généré)."""
+    d = Path("musique")
+    for ext in (".mp3", ".wav", ".m4a"):
+        f = d / f"{anim}{ext}"
+        if f.exists():
+            return f
+    found = sorted(d.glob("*.mp3")) if d.exists() else []
+    return found[0] if found else None
+
+
 def ask_color() -> str:
     """Design transparent et pas de couleur donnée : on demande la couleur du t-shirt."""
     noms = ", ".join(COLORS)
@@ -110,15 +127,21 @@ def main():
     ap.add_argument("--print-top", type=float, default=7.0, help="cm entre le col et le haut de la zone")
     ap.add_argument("--wind", type=float, default=1.0)
     ap.add_argument("--blender", help="chemin de blender.exe")
-    ap.add_argument("--samples", type=int, default=128, help="qualité Cycles (128 par défaut)")
-    ap.add_argument("--fast", action="store_true", help="EEVEE en 1080x1920 : quelques minutes, un peu moins beau")
+    ap.add_argument("--anim", choices=["vent", "chute", "vitrine"], default="vent",
+                    help="vent : porté en plein vent ; chute : tombe et se drape sur un socle ; vitrine : tour à 360°")
+    ap.add_argument("--final", action="store_true",
+                    help="version lourde : Cycles sur la carte graphique. Réutilise la simulation du brouillon")
+    ap.add_argument("--samples", type=int, default=64,
+                    help="qualité Cycles de la version finale (64 + débruitage ; 128 = plus propre, 2x plus long)")
+    ap.add_argument("--resim", action="store_true", help="refait la simulation même si elle existe déjà")
+    ap.add_argument("--fast", action="store_true", help="(ancien nom du brouillon, par défaut maintenant)")
     ap.add_argument("--preview", action="store_true", help="540x960 EEVEE : juste pour vérifier le cadrage")
     ap.add_argument("--hanger", action="store_true", help="t-shirt sur un cintre (par défaut : porté par un corps invisible)")
     ap.add_argument("--orbit", action="store_true", help="caméra en simple rotation au lieu des plans")
     ap.add_argument("--skip-3d", action="store_true", help="réutilise le rendu 3D existant")
     ap.add_argument("--check", action="store_true",
                     help="vérification rapide : simulation + 8 images dans out/check.png, sans vidéo")
-    ap.add_argument("--out", default="out/pub3d.mp4")
+    ap.add_argument("--out", help="vidéo finale (défaut : out/<anim>_brouillon.mp4 ou out/<anim>_final.mp4)")
     A = ap.parse_args()
 
     ffmpeg = find_ffmpeg()
@@ -143,28 +166,49 @@ def main():
     print(f"[pub3d] Aperçu du placement : {apercu}  (ouvre-le pour vérifier avant d'attendre la 3D)")
 
     # 2. 3D
-    clip = work / "tshirt3d.mp4"
+    if not A.out:
+        A.out = f"out/{A.anim}_{'final' if A.final else 'brouillon'}.mp4"
+    clip = work / f"tshirt3d_{A.anim}.mp4"
     seconds = 15.0
+    blend = work / f"scene_{A.anim}.blend"
+    sig_path = work / f"scene_{A.anim}.json"
+    # tout ce qui change la simulation : si rien n'a bougé, on réutilise la scène déjà simulée
+    signature = {
+        "anim": A.anim, "front": file_sig(A.front), "back": file_sig(A.back) if A.back else None, "color": color,
+        "print": [A.print_size, A.print_top], "wind": A.wind, "hanger": A.hanger, "orbit": A.orbit,
+        "seconds": seconds, "script": file_sig(HERE / "tshirt3d" / "tshirt3d.py"),
+    }
+    reuse = (not A.resim and not A.preview and blend.exists() and sig_path.exists()
+             and json.loads(sig_path.read_text(encoding="utf-8")) == signature)
     if not A.skip_3d:
         blender = find_blender(A.blender)
-        cmd = [blender, "-b", "-P", str(HERE / "tshirt3d" / "tshirt3d.py"), "--",
-               "--design", str(front), "--color", color, "--turn",
-               "--print-size", str(A.print_size), "--print-top", str(A.print_top),
-               "--wind", str(A.wind), "--seconds", str(seconds), "--out", str(clip)]
-        if back:
-            cmd += ["--back", str(back)]
+        script = str(HERE / "tshirt3d" / "tshirt3d.py")
+        if reuse:
+            print(f"[pub3d] Simulation déjà faite pour « {A.anim} » : rendu seul ({blend})")
+            cmd = [blender, "-b", str(blend), "-P", script, "--", "--render-only", "--out", str(clip)]
+        else:
+            cmd = [blender, "-b", "-P", script, "--",
+                   "--anim", A.anim, "--design", str(front), "--color", color, "--turn",
+                   "--print-size", str(A.print_size), "--print-top", str(A.print_top),
+                   "--wind", str(A.wind), "--seconds", str(seconds), "--out", str(clip)]
+            if back:
+                cmd += ["--back", str(back)]
+            if A.hanger:
+                cmd += ["--hanger"]
+            if A.orbit:
+                cmd += ["--orbit"]
+            if not A.preview:
+                cmd += ["--blend", str(blend)]
+                if sig_path.exists():
+                    sig_path.unlink()
         if A.check:
             cmd += ["--check"]
         elif A.preview:
             cmd += ["--engine", "eevee", "--samples", "16", "--preview"]
-        elif A.fast:
-            cmd += ["--engine", "eevee", "--samples", "64"]
-        else:                                   # qualité : Cycles sur la carte graphique, Full HD vertical
+        elif A.final:                           # version lourde : Cycles sur la carte graphique, Full HD
             cmd += ["--engine", "cycles", "--samples", str(A.samples)]
-        if A.hanger:
-            cmd += ["--hanger"]
-        if A.orbit:
-            cmd += ["--orbit"]
+        else:                                   # brouillon : EEVEE Full HD, quelques minutes de rendu
+            cmd += ["--engine", "eevee", "--samples", "64"]
         print("[pub3d] Blender :", " ".join(f'"{c}"' if " " in c else c for c in cmd))
         t0 = time.time()
         if clip.exists():
@@ -183,10 +227,12 @@ def main():
         if p.returncode != 0 or not clip.exists():
             print("".join(open(log_path, encoding="utf-8", errors="replace").readlines()[-40:]))
             sys.exit(f"[pub3d] Blender a échoué. Journal complet : {log_path}")
-        print(f"[pub3d] 3D rendue en {time.time() - t0:.0f} s")
+        if not reuse and not A.preview and blend.exists():
+            sig_path.write_text(json.dumps(signature), encoding="utf-8")
+        print(f"[pub3d] 3D rendue en {(time.time() - t0) / 60:.1f} min")
 
     if A.check:                       # planche de contrôle, pas de montage
-        frames = sorted((work / "tshirt3d_frames").glob("*.png"))
+        frames = sorted((work / f"tshirt3d_{A.anim}_frames").glob("*.png"))
         ims = [Image.open(f).convert("RGB") for f in frames][:8]
         if not ims:
             sys.exit("[pub3d] aucune image de contrôle produite")
@@ -203,12 +249,17 @@ def main():
     cmd = [sys.executable, str(HERE / "tshirt_video.py"), "--clip3d", str(clip), "--out", A.out]
     if A.config:
         cmd += ["--config", A.config]
-    if A.music:
-        cmd += ["--music", A.music]
+    music = A.music or find_music(A.anim)
+    if music:
+        print(f"[pub3d] musique : {music}")
+        cmd += ["--music", str(music)]
     if A.preview:
         cmd += ["--preview"]
     subprocess.run(cmd, check=True)
     print(f"[pub3d] Terminé -> {A.out}")
+    if not A.final and not A.preview:
+        print(f"[pub3d] Si le brouillon te plaît, la version lourde (même simulation, rendu Cycles) :")
+        print(f"        python pub3d.py ... --anim {A.anim} --final")
 
 
 if __name__ == "__main__":

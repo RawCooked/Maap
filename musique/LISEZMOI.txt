@@ -1,0 +1,4 @@
+Mets ici tes musiques (libres de droits).
+- musique\vent.mp3, musique\chute.mp3, musique\vitrine.mp3 : une par animation
+- sinon le premier .mp3 du dossier est utilise pour toutes
+- sans musique : un beat est genere automatiquement
