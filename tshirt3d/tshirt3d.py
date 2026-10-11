@@ -187,8 +187,7 @@ def body_depth(x, z):
 def dist_to_sewn(bnd, x, z):
     """Distance (cm) aux coutures (les bords cousus restent à plat)."""
     best = 1e9
-    n = len(bnd)
-    for k in range(n):
+    for k in range(len(OUTLINE)):
         if not OUTLINE_SEWN[k]:
             continue
         (xa, za), (xb, zb) = SEG_PTS[k]
