@@ -26,9 +26,11 @@ Ouvre ensuite `design\produit.json` pour changer le nom, le prix et les textes. 
 |---|---|---|
 | `TEST_RAPIDE.bat` | 540×960, EEVEE : **seulement pour vérifier le cadrage**. C'est volontairement basse définition, donc pixelisé | ~5 min |
 | `LANCER_PUB3D.bat --fast` | 1080×1920, EEVEE : propre, rapide | ~10 à 15 min |
-| `LANCER_PUB3D.bat` | 1080×1920, **Cycles sur la carte graphique, 128 échantillons, maillage fin** : la qualité maximale | ~30 min à 1 h |
+| `LANCER_PUB3D.bat` | 1080×1920, **Cycles sur la carte graphique, 128 échantillons** : la qualité maximale | dépend de la carte graphique : la fenêtre affiche le temps restant |
 
-\* Ce sont des estimations, je n'ai pas pu mesurer sur ta machine.
+\* Ce sont des estimations, je n'ai pas pu mesurer sur ta machine. Pendant la simulation puis le rendu, chaque ligne affiche le temps par image et le temps restant (`reste ~XX min`). **Si le temps restant dépasse 2 heures, arrête avec Ctrl+C** et lance plutôt `--fast`.
+
+Si la fenêtre affiche `ATTENTION : aucune carte graphique trouvée pour Cycles`, Blender ne voit pas ta RX 6650 XT. Le script bascule alors tout seul sur EEVEE, pour ne pas rendre pendant une journée sur le processeur. Pour que Cycles marche, mets à jour le pilote AMD Adrenalin, puis vérifie dans Blender > Édition > Préférences > Système > Cycles Render Devices > HIP.
 
 Le résultat sort dans `out\pub3d_test.mp4` ou `out\pub3d.mp4`.
 

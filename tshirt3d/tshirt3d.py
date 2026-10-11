@@ -37,6 +37,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 import bmesh
 import bpy
@@ -104,7 +105,7 @@ OUTLINE = [
     ((-24.0, -4.0), True),    # épaule gauche
 ]
 NECK_DIP = 7.0   # profondeur de l'encolure devant (cm)
-H = 1.4 if A.preview else 1.1   # finesse du maillage (cm) ; plus petit = plus beau mais plus lent
+H = 1.4 if A.preview else 1.25  # finesse du maillage (cm) ; plus petit = plus beau mais bien plus lent
 
 
 def outline_points():
@@ -419,7 +420,7 @@ shirt.data.materials.append(fabric_material("Dos", A.back, mirror_u=True))
 # ─────────────────────────── physique du tissu ───────────────────────────
 cloth = shirt.modifiers.new("Cloth", "CLOTH")
 s = cloth.settings
-s.quality = 8 if A.preview else 10
+s.quality = 8
 s.mass = A.mass                  # kg par sommet
 s.tension_stiffness = 15
 s.compression_stiffness = 15
@@ -435,7 +436,7 @@ cs = cloth.collision_settings
 cs.use_self_collision = True
 cs.self_distance_min = 0.004
 cs.distance_min = 0.006
-cs.collision_quality = 4
+cs.collision_quality = 3
 cs.use_collision = True
 total_frames = int(A.seconds * A.fps)
 cloth.point_cache.frame_start = 1
@@ -620,6 +621,7 @@ if A.engine == "eevee":
         scene.eevee.use_raytracing = True      # reflets et ombres de contact plus propres
 else:
     r.engine = "CYCLES"
+    gpu_found = False
     prefs = bpy.context.preferences.addons["cycles"].preferences
     for dev_type in ("OPTIX", "CUDA", "HIP", "METAL", "ONEAPI"):   # carte graphique si dispo
         try:
@@ -629,17 +631,30 @@ else:
                 for d in prefs.devices:
                     d.use = d.type != "CPU"        # carte graphique seule : le processeur la ralentirait
                 scene.cycles.device = "GPU"
-                print(f"[tshirt3d] rendu GPU ({dev_type})", flush=True)
+                names = ", ".join(d.name for d in prefs.devices if d.use)
+                print(f"[tshirt3d] rendu GPU ({dev_type}) : {names}", flush=True)
+                gpu_found = True
                 break
         except Exception:
             continue
     scene.cycles.samples = A.samples
     scene.cycles.use_denoising = True
     scene.cycles.max_bounces = 4
+    if not gpu_found:
+        # Cycles sur le processeur = plusieurs minutes par image (une journée pour la vidéo).
+        # On bascule sur EEVEE, qui passe par la carte graphique via le pilote d'affichage.
+        print("[tshirt3d] ATTENTION : aucune carte graphique trouvée pour Cycles (pilote AMD ? HIP ?).", flush=True)
+        print("[tshirt3d] Bascule automatique sur EEVEE pour éviter un rendu de plusieurs heures.", flush=True)
+        names = [e.identifier for e in bpy.types.RenderSettings.bl_rna.properties["engine"].enum_items]
+        r.engine = "BLENDER_EEVEE_NEXT" if "BLENDER_EEVEE_NEXT" in names else "BLENDER_EEVEE"
+        scene.eevee.taa_render_samples = 64
+        if hasattr(scene.eevee, "use_raytracing"):
+            scene.eevee.use_raytracing = True
 r.resolution_x, r.resolution_y = W, Hh
 r.fps = A.fps
 r.film_transparent = False
-r.use_motion_blur = True        # flou de mouvement : manches et caméra plus naturelles
+# flou de mouvement : léger en EEVEE ; coupé en Cycles où il multiplie le temps de rendu du tissu
+r.use_motion_blur = r.engine != "CYCLES"
 r.motion_blur_shutter = 0.5
 scene.view_settings.view_transform = "Standard"   # couleurs de marque fidèles
 scene.view_settings.look = "Medium High Contrast"
@@ -652,10 +667,14 @@ if A.save_blend:
 
 # simulation (doit passer image par image depuis le début)
 print(f"[tshirt3d] simulation du tissu : {PREROLL + total_frames} images…", flush=True)
-for f in range(1, PREROLL + total_frames + 1):
+t_sim = time.time()
+n_sim = PREROLL + total_frames
+for f in range(1, n_sim + 1):
     scene.frame_set(f)
     if f % 20 == 0:
-        print(f"[tshirt3d]   sim {f}/{PREROLL + total_frames}", flush=True)
+        el = time.time() - t_sim
+        print(f"[tshirt3d]   sim {f}/{n_sim}  ({el / f:.1f} s/image, reste ~{el / f * (n_sim - f) / 60:.0f} min)", flush=True)
+print(f"[tshirt3d] simulation terminée en {(time.time() - t_sim) / 60:.1f} min", flush=True)
 
 if A.sim_only:
     dg = bpy.context.evaluated_depsgraph_get()
@@ -681,12 +700,20 @@ n_total = len(range(scene.frame_start, scene.frame_end + 1, A.every))
 done = [0]
 
 
+t_render = [time.time()]
+
+
 def _progress(_scene, _depsgraph=None):
     done[0] += 1
-    print(f"[tshirt3d] rendu {done[0]}/{n_total}", flush=True)
+    el = time.time() - t_render[0]
+    per = el / done[0]
+    print(f"[tshirt3d] rendu {done[0]}/{n_total}  ({per:.1f} s/image, reste ~{per * (n_total - done[0]) / 60:.0f} min)",
+          flush=True)
 
 
 bpy.app.handlers.render_write.append(_progress)
+print(f"[tshirt3d] rendu : {r.engine}, {W}x{Hh}, {n_total} images", flush=True)
+t_render[0] = time.time()
 bpy.ops.render.render(animation=True)
 # renumérote 0000, 0001, ... pour ffmpeg
 for i, name in enumerate(sorted(n for n in os.listdir(frames_dir) if n.startswith("f_"))):
