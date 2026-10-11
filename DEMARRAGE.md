@@ -21,9 +21,31 @@ Le fond uni (#121212) est détouré automatiquement et cette même couleur devie
 
 Ouvre ensuite `design\produit.json` pour changer le nom, le prix et les textes. **Le prix (49 DT) et les textes actuels sont des exemples à remplacer.**
 
+## 3 bis. Préparer et placer tes designs
+**Comment le design est posé.** Chaque PNG (devant, dos) est étiré sur une **zone d'impression de 30 cm de large**, centrée, dont le haut est à **7 cm sous le col**. Sa hauteur suit les proportions du PNG : en 3000 × 3900 px, il fait 30 × 39 cm. Ce que tu dessines en haut à droite du PNG se retrouve en haut à droite du t-shirt vu de face, donc sur le cœur de la personne.
+
+**Le gabarit.** Lance `APERCU.bat` une fois : il crée `design\GABARIT_zone_impression.png`, en 3000 × 3900 px, avec les repères (centre, zone cœur 10 × 10 cm, poitrine 25 × 12 cm, plein devant/dos 27 × 36 cm, règle en cm). Ouvre-le comme **calque du dessous** dans ton logiciel, dessine par-dessus, puis **masque le gabarit avant d'exporter**. Exporte en PNG transparent.
+
+**L'aperçu.** `APERCU.bat` affiche en une seconde `out\apercu.png` : le t-shirt à plat, devant et dos, avec tes designs placés exactement comme dans la vidéo. `pub3d.py` le refait aussi automatiquement avant chaque rendu.
+
+**La couleur.** Si ton design a un fond uni, ce fond devient la couleur du t-shirt. S'il est transparent, la couleur vient de `"couleur_tshirt"` dans `design\produit.json`, ou de l'option `--color`, sinon le script te la demande. Tu peux écrire un nom (noir, blanc, gris, gris chiné, bleu marine, bleu, rouge, bordeaux, vert, kaki, sable, beige, rose) ou un code `#RRGGBB`.
+
+**Outils gratuits pour dessiner :**
+| Outil | Pour quoi |
+|---|---|
+| **Photopea** (photopea.com, dans le navigateur) | Comme Photoshop : calques, PNG transparent. Ouvre le gabarit, ajoute ton design au-dessus |
+| **Canva** / **Kittl** (version gratuite) | Typo et mise en page rapides ; crée un document en 3000 × 3900 px |
+| **Inkscape** (logiciel gratuit) | Dessin vectoriel : le design reste net à toutes les tailles |
+| **Générateurs de maquettes Printful / Printify** (compte gratuit) | Placent ton design sur leurs vrais t-shirts, avec leurs zones d'impression |
+
+**L'appli qui crée un vêtement 3D à partir d'un patron** : ce sont **CLO3D** et **Marvelous Designer** (payants, avec essai gratuit). Ils servent à concevoir la coupe du vêtement. Pour poser un design sur un t-shirt existant, le gabarit et l'aperçu suffisent.
+
+**Pour l'imprimeur** : la plupart demandent environ **300 dpi**, soit **3543 × 4606 px** pour 30 × 39 cm, en PNG transparent. Garde les mêmes proportions que le gabarit : le placement dans la vidéo reste identique. Demande-lui sa zone maximale et la distance sous le col (souvent 7 à 10 cm), et ajuste si besoin avec `--print-size` et `--print-top`.
+
 ## 4. Lancer
 | Fichier | Ce qu'il fait | Durée estimée sur ton PC* |
 |---|---|---|
+| `APERCU.bat` | Aperçu à plat du placement + gabarit, sans Blender | ~1 s |
 | `VERIFIER_3D.bat` | **À lancer en premier** : simulation + 8 images dans `out\check.png`, sans vidéo. Envoie l'image à Claude avant le rendu complet | la simulation + ~1 min |
 | `TEST_RAPIDE.bat` | 540×960, EEVEE : **seulement pour vérifier le cadrage**. C'est volontairement basse définition, donc pixelisé | ~5 min |
 | `LANCER_PUB3D.bat --fast` | 1080×1920, EEVEE : propre, rapide | ~10 à 15 min |

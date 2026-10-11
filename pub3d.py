@@ -27,6 +27,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from placement import COLORS, make_apercu, parse_color
+
 HERE = Path(__file__).resolve().parent
 
 
@@ -79,11 +81,29 @@ def prepare_design(src: str, dst: Path) -> tuple[str | None, Path]:
     return "#%02X%02X%02X" % tuple(int(round(c)) for c in bg), dst
 
 
+def ask_color() -> str:
+    """Design transparent et pas de couleur donnée : on demande la couleur du t-shirt."""
+    noms = ", ".join(COLORS)
+    if not sys.stdin.isatty():
+        print("[pub3d] couleur du t-shirt non précisée : noir par défaut (--color pour changer)")
+        return "noir"
+    print(f"[pub3d] Ton design est transparent : de quelle couleur est le t-shirt ?")
+    print(f"        {noms}, ou un code comme #1C2340")
+    while True:
+        rep = input("        Couleur [noir] : ").strip() or "noir"
+        try:
+            parse_color(rep)
+            return rep
+        except ValueError:
+            print("        Pas reconnu, réessaie.")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Pub t-shirt 3D automatique")
     ap.add_argument("--front", required=True, help="design devant (PNG)")
     ap.add_argument("--back", help="design dos (PNG)")
-    ap.add_argument("--color", help="couleur du tissu (sinon : fond du design, ou #141418)")
+    ap.add_argument("--color", help="couleur du tissu : nom (noir, blanc, bleu marine…) ou #RRGGBB. "
+                                    "Sinon : couleur_tshirt du JSON, fond du design, ou on te la demande")
     ap.add_argument("--config", help="JSON produit (nom, prix, textes) pour la pub")
     ap.add_argument("--music", help="musique à la place du beat généré")
     ap.add_argument("--print-size", type=float, default=0.30, help="largeur de la zone d'impression (m)")
@@ -111,8 +131,16 @@ def main():
     back = None
     if A.back:
         _, back = prepare_design(A.back, work / "back.png")
-    color = A.color or bg_front or "#141418"
+    cfg_color = None
+    if A.config:
+        cfg_color = json.loads(Path(A.config).read_text(encoding="utf-8")).get("couleur_tshirt")
+    color = A.color or cfg_color or bg_front
+    if not color:
+        color = ask_color()
+    color = "#%02X%02X%02X" % parse_color(color)
     print(f"[pub3d] tissu {color} ; designs prêts dans {work}")
+    apercu = make_apercu(front, back, color, Path("out/apercu.png"), A.print_size, A.print_top)
+    print(f"[pub3d] Aperçu du placement : {apercu}  (ouvre-le pour vérifier avant d'attendre la 3D)")
 
     # 2. 3D
     clip = work / "tshirt3d.mp4"
