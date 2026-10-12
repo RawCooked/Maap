@@ -1,0 +1,2 @@
+Mets ici le t-shirt exporte depuis Marvelous Designer, sous le nom danse1.abc
+(Alembic Ogawa, t-shirt seul, Weld, Thick). Puis double-clic sur ANIM_DANSE.bat.
