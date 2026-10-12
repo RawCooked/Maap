@@ -349,6 +349,9 @@ def build_body():
             for k in range(16):
                 bm.faces.new([a_[k], a_[(k + 1) % 16], b_[(k + 1) % 16], b_[k]])
         bm.faces.new(list(reversed(arm[0]))); bm.faces.new(arm[-1])
+    # faces tournées vers l'extérieur : sinon Blender croit le tissu « dans » le corps et l'éjecte
+    # (le t-shirt se roulait en boule sur les épaules dès les premières images)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
     me = bpy.data.meshes.new("Corps")
     bm.to_mesh(me); bm.free()
     ob = bpy.data.objects.new("Corps", me)
@@ -368,7 +371,7 @@ if A.anim == "chute":
     # le t-shirt est à plat, devant vers le haut, au-dessus d'un socle ; il tombe quand la gravité arrive
     shirt.rotation_euler = (math.radians(-90), 0, 0)
     shirt.location = (0, 0.36, 1.45)
-    bpy.ops.mesh.primitive_cylinder_add(radius=0.32, depth=0.95, vertices=96, location=(0, 0, 0.475))
+    bpy.ops.mesh.primitive_cylinder_add(radius=0.22, depth=0.95, vertices=96, location=(0, 0, 0.475))   # étroit : le t-shirt retombe sur les côtés
     socle = bpy.context.object
     for p_ in socle.data.polygons:
         p_.use_smooth = True
@@ -589,7 +592,7 @@ def area(name, loc, energy, size, color=(1, 1, 1), target=(0, 0, 1.25)):
 
 lights = [area("Key", (-1.4, -1.8, 2.3), 220, 1.6, (1.0, 0.96, 0.92)),
           area("Fill", (1.8, -1.4, 1.2), 50, 2.0, (0.85, 0.9, 1.0))]
-lights.append(area("Rim", (0.9, 0.9, 2.0), 260, 0.6, (1.0, 0.3, 0.35), (0, 0, 1.4)))      # liseré rouge de la marque
+lights.append(area("Rim", (0.9, 0.9, 2.0), 260 if A.anim != "chute" else 110, 0.6, (1.0, 0.3, 0.35), (0, 0, 1.4)))      # liseré rouge de la marque
 lights.append(area("Rim2", (-1.0, 0.9, 1.6), 140, 0.6, (0.6, 0.75, 1.0), (0, 0, 1.3)))
 
 cam_d = bpy.data.cameras.new("Cam"); cam_d.lens = 50
