@@ -61,6 +61,7 @@ ap.add_argument("--hanger", action="store_true", help="t-shirt sur un cintre au 
 ap.add_argument("--orbit", action="store_true", help="ancienne caméra : simple rotation au lieu des plans")
 ap.add_argument("--exposure", type=float, default=-0.8)
 ap.add_argument("--wind", type=float, default=1.0)
+ap.add_argument("--turb", type=float, default=1.0, help="turbulence (multiplie celle par défaut)")
 ap.add_argument("--seconds", type=float, default=5.0)
 ap.add_argument("--res", default="1080x1920")
 ap.add_argument("--samples", type=int, default=64)
@@ -93,7 +94,8 @@ if A.render_only:
     render_part.render_animation(sc, A, int(sc["preroll"]), int(sc["total_frames"]))
     sys.exit(0)
 
-FLAT = A.hanger or A.anim == "chute"   # patron plat (cintre, chute) ; sinon gonflé autour du corps invisible
+FLAT = A.hanger or A.anim == "chute"
+PIN_SOFT = 0.2   # force de la retenue douce du torse (voir build_shirt)   # patron plat (cintre, chute) ; sinon gonflé autour du corps invisible
 
 PREROLL = 45  # images de simulation avant le début de la vidéo (le tissu se met en place)
 
@@ -310,6 +312,17 @@ def build_shirt():
     pins = [v.index for v in me.vertices
             if v.co.z > -0.055 and 0.07 < abs(v.co.x) < 0.20]
     vg.add(pins, 1.0, "REPLACE")
+    if not FLAT:
+        # retenue douce du torse sur le corps invisible, comme sur un mannequin de vitrine : sans elle, le
+        # vent fait glisser le tissu vers le haut jusqu'au col. Elle s'efface vers l'ourlet ; les manches
+        # restent libres. (poids de 0 à 1 = force du maintien)
+        pin_set = set(pins)
+        for v in me.vertices:
+            if v.index in pin_set or abs(v.co.x) > 0.22:
+                continue
+            w = PIN_SOFT * max(0.0, min(1.0, (v.co.z + 0.62) / 0.30))   # plein jusqu'à -32 cm, 0 à -62 cm
+            if w > 0.001:
+                vg.add([v.index], w, "REPLACE")
     return obj
 
 
@@ -467,11 +480,11 @@ cloth = shirt.modifiers.new("Cloth", "CLOTH")
 s = cloth.settings
 s.quality = 8
 s.mass = A.mass                  # kg par sommet
-s.tension_stiffness = 15
-s.compression_stiffness = 15
+s.tension_stiffness = 15 if FLAT else 25
+s.compression_stiffness = 15 if FLAT else 25
 s.shear_stiffness = 5
-s.bending_stiffness = 0.08
-s.air_damping = 1.0 if A.hanger else 1.6
+s.bending_stiffness = 0.08 if FLAT else 0.5   # coton épais : le vent ne le plie pas en boule
+s.air_damping = 1.0 if A.hanger else 2.5
 s.vertex_group_mass = "" if A.anim == "chute" else "pin"   # la chute n'est tenue par rien
 s.use_pressure = A.hanger        # sur cintre : la pression donne du volume ; sinon c'est le corps
 s.uniform_pressure_force = 0.6
@@ -514,7 +527,7 @@ wind.rotation_euler = WIND_DIR.to_track_quat("Z", "Y").to_euler()
 wind.field.strength = 0
 wind.field.noise = 3.0
 wind.field.seed = 7
-WIND_BASE = 900 if A.hanger else 700    # 2600 retroussait le t-shirt en boule sur les épaules
+WIND_BASE = 900 if A.hanger else 1300   # testé stable 15 s avec la retenue douce du torse
 if A.anim in ("chute", "vitrine"):
     WIND_BASE = 0                       # pas de vent : le tissu tombe ou reste posé
 gusts = ((0.0, 1.0), (0.12, 1.5), (0.22, 0.9), (0.38, 1.7), (0.5, 1.1), (0.62, 1.8), (0.75, 1.0),
@@ -524,7 +537,8 @@ for f, k in [(1, 0.0), (PREROLL - 15, 0.0)] + [(PREROLL + fr * total_frames, k) 
     wind.field.keyframe_insert("strength", frame=int(f))
 bpy.ops.object.effector_add(type="TURBULENCE", location=(0, 0, 1.3))
 turb = bpy.context.object
-turb.field.strength = 0 if A.anim in ("chute", "vitrine") else 160 * A.wind
+turb.field.strength = 0 if A.anim in ("chute", "vitrine") else (160 if A.hanger else 48) * A.wind * A.turb
+# (sur le corps, une turbulence forte soulève le tissu jusqu'au col : 48 est testé stable)
 turb.field.size = 0.4
 turb.field.flow = 0.5
 
