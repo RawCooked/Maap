@@ -77,6 +77,10 @@ ap.add_argument("--check", action="store_true", help="vérification : 8 images b
 ap.add_argument("--anim", choices=["vent", "chute", "vitrine"], default="vent",
                 help="vent : porté, en plein vent, 6 plans ; chute : tombe et se drape sur un socle ; "
                      "vitrine : porté, sans vent, la caméra en fait le tour")
+ap.add_argument("--garment", help="vêtement animé importé (.abc de Marvelous Designer, ou .obj/.fbx) : "
+                                  "remplace le t-shirt simulé, sans simulation")
+ap.add_argument("--facing", choices=["-y", "+y"], default="-y", help="sens du devant du vêtement importé")
+ap.add_argument("--export-abc", help="exporte le t-shirt simulé en Alembic (test du mode --garment)")
 ap.add_argument("--blend", help="enregistre la scène simulée ici (pour un rendu final sans re-simuler)")
 ap.add_argument("--render-only", action="store_true",
                 help="rend la scène .blend ouverte par Blender (déjà simulée) sans la reconstruire")
@@ -97,7 +101,7 @@ if A.render_only:
 FLAT = A.hanger or A.anim == "chute"
 PIN_SOFT = 0.2   # force de la retenue douce du torse (voir build_shirt)   # patron plat (cintre, chute) ; sinon gonflé autour du corps invisible
 
-PREROLL = 45  # images de simulation avant le début de la vidéo (le tissu se met en place)
+PREROLL = 0 if A.garment else 45  # images de simulation avant le début de la vidéo (le tissu se met en place)
 
 
 def hex_rgb(h):
@@ -326,8 +330,98 @@ def build_shirt():
     return obj
 
 
-shirt = build_shirt()
-shirt.location = (0, 0, 1.55)
+def import_garment():
+    """Charge un vêtement déjà animé (Alembic de Marvelous Designer, ou OBJ/FBX) : mise à l'échelle,
+    devant face caméra, col à 1,55 m, UV de print calculées sur la première image (comme le patron maison)."""
+    global GARMENT_NECK_Z
+    path = os.path.abspath(A.garment)
+    before = set(bpy.data.objects)
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".abc":
+        bpy.ops.wm.alembic_import(filepath=path, as_background_job=False)
+    elif ext == ".obj":
+        bpy.ops.wm.obj_import(filepath=path)
+    elif ext == ".fbx":
+        bpy.ops.import_scene.fbx(filepath=path)
+    else:
+        sys.exit(f"[tshirt3d] format non géré : {ext} (attendu .abc, .obj ou .fbx)")
+    new = [o for o in bpy.data.objects if o not in before]
+    meshes = [o for o in new if o.type == "MESH"]
+    if not meshes:
+        sys.exit(f"[tshirt3d] aucun maillage dans {path}")
+    for o in new:
+        if o.type != "MESH":                      # caméras, armatures... importées avec : inutiles
+            o.hide_render = True
+    for o in meshes:
+        for m in o.modifiers:
+            if m.type == "MESH_SEQUENCE_CACHE":
+                m.read_data = {"VERT"}            # positions seules : nos UV et matériaux restent
+    scene.frame_set(1)
+
+    def world_points():
+        dg = bpy.context.evaluated_depsgraph_get()
+        pts = []
+        for o in meshes:
+            ev = o.evaluated_get(dg)
+            me = ev.to_mesh()
+            mw = o.matrix_world
+            pts += [mw @ v.co for v in me.vertices]
+            ev.to_mesh_clear()
+        return pts
+
+    pts = world_points()
+    h = max(p.z for p in pts) - min(p.z for p in pts)
+    k = 10 ** -round(math.log10(max(h, 1e-6) / 0.75))     # cm → 0,01 ; mm → 0,001 ; m → 1
+    for o in meshes:
+        o.scale = [c * k for c in o.scale]
+        if A.facing == "+y":
+            o.rotation_euler.z += math.pi
+    bpy.context.view_layer.update()
+    pts = world_points()
+    cx = (max(p.x for p in pts) + min(p.x for p in pts)) / 2
+    cy = (max(p.y for p in pts) + min(p.y for p in pts)) / 2
+    top = max(p.z for p in pts)
+    for o in meshes:
+        o.location.x -= cx
+        o.location.y -= cy
+        o.location.z += 1.55 - top
+    bpy.context.view_layer.update()
+    GARMENT_NECK_Z = 1.55
+    print(f"[tshirt3d] vêtement importé : {len(meshes)} maillage(s), hauteur {h * k:.2f} m (échelle x{k:g})", flush=True)
+
+    dg = bpy.context.evaluated_depsgraph_get()
+    for o in meshes:
+        ev = o.evaluated_get(dg)
+        me_ev = ev.to_mesh()
+        mw = o.matrix_world
+        rot = mw.to_3x3()
+        wpos = [mw @ v.co for v in me_ev.vertices]
+        sides = [0 if (rot @ p.normal).y < 0 else 1 for p in me_ev.polygons]
+        ev.to_mesh_clear()
+        me = o.data
+        me.materials.clear()
+        uv = me.uv_layers.new(name="PrintUV")
+        me.uv_layers.active = uv
+        uv.active_render = True
+        for poly, side in zip(me.polygons, sides):
+            poly.material_index = side
+            poly.use_smooth = True
+            for li in poly.loop_indices:
+                p = wpos[me.loops[li].vertex_index]
+                x, z = p.x * 100, (p.z - 1.55) * 100
+                u = (x + 45) / 90
+                uv.data[li].uv = ((u if side == 0 else 1 - u) * 0.5 + 0.5 * side, (z + 80) / 85)
+    others = sorted(meshes, key=lambda o: len(o.data.vertices), reverse=True)
+    return others[0], others[1:]
+
+
+GARMENT_NECK_Z = None
+extra_pieces = []
+if A.garment:
+    shirt, extra_pieces = import_garment()
+else:
+    shirt = build_shirt()
+    shirt.location = (0, 0, 1.55)
 
 
 def build_body():
@@ -378,7 +472,7 @@ def build_body():
     return ob
 
 
-body = None if FLAT else build_body()
+body = None if (FLAT or A.garment) else build_body()
 
 if A.anim == "chute":
     # le t-shirt est à plat, devant vers le haut, au-dessus d'un socle ; il tombe quand la gravité arrive
@@ -472,75 +566,85 @@ def fabric_material(name, design_path, mirror_u=False):
     return m
 
 
-shirt.data.materials.append(fabric_material("Devant", A.design))
-shirt.data.materials.append(fabric_material("Dos", A.back, mirror_u=True))
+MAT_FRONT = fabric_material("Devant", A.design)
+MAT_BACK = fabric_material("Dos", A.back, mirror_u=True)
+for o in [shirt] + extra_pieces:
+    o.data.materials.append(MAT_FRONT)
+    o.data.materials.append(MAT_BACK)
 
-# ─────────────────────────── physique du tissu ───────────────────────────
-cloth = shirt.modifiers.new("Cloth", "CLOTH")
-s = cloth.settings
-s.quality = 8
-s.mass = A.mass                  # kg par sommet
-s.tension_stiffness = 15 if FLAT else 25
-s.compression_stiffness = 15 if FLAT else 25
-s.shear_stiffness = 5
-s.bending_stiffness = 0.08 if FLAT else 0.5   # coton épais : le vent ne le plie pas en boule
-s.air_damping = 1.0 if A.hanger else 2.5
-s.vertex_group_mass = "" if A.anim == "chute" else "pin"   # la chute n'est tenue par rien
-s.use_pressure = A.hanger        # sur cintre : la pression donne du volume ; sinon c'est le corps
-s.uniform_pressure_force = 0.6
-s.pressure_factor = 1.0
-s.shrink_min = 0.0
-cs = cloth.collision_settings
-# collision du tissu sur lui-même : c'est elle qui faisait passer la simulation de 0,5 à 13 s par image.
-# Sur le corps invisible, le torse sépare déjà le devant du dos : inutile. Gardée pour la chute (le tissu
-# s'y replie vraiment) et le cintre.
-cs.use_self_collision = FLAT
-cs.self_distance_min = 0.004
-cs.distance_min = 0.006
-cs.collision_quality = 3
-cs.use_collision = True
 total_frames = int(A.seconds * A.fps)
-cloth.point_cache.frame_start = 1
-cloth.point_cache.frame_end = PREROLL + total_frames
-if A.anim == "chute":
-    # en apesanteur pendant l'accroche, puis la gravité revient à 2 s : le t-shirt tombe sur le socle
-    f_drop = PREROLL + int(2.0 * A.fps * A.seconds / 15.0)
-    for f_, g in ((1, 0.0), (f_drop - 1, 0.0), (f_drop, -9.81)):
-        scene.gravity = (0.0, 0.0, g)
-        scene.keyframe_insert("gravity", frame=f_)
-    for fc in scene.animation_data.action.fcurves:
-        for kp in fc.keyframe_points:
-            kp.interpolation = "CONSTANT"
-subd = shirt.modifiers.new("Subdiv", "SUBSURF")
-subd.levels = 1
-subd.render_levels = 1   # niveau 2 multipliait le maillage par ~30 : le processeur le reconstruisait à chaque image
-sol = shirt.modifiers.new("Epaisseur", "SOLIDIFY")
-sol.thickness = 0.0025
+cloth = None
+if A.garment:
+    for o in [shirt] + extra_pieces:
+        sol_ = o.modifiers.new("Epaisseur", "SOLIDIFY")
+        sol_.thickness = 0.0015
+else:
+    # ─────────────────────────── physique du tissu ───────────────────────────
+    cloth = shirt.modifiers.new("Cloth", "CLOTH")
+    s = cloth.settings
+    s.quality = 8
+    s.mass = A.mass                  # kg par sommet
+    s.tension_stiffness = 15 if FLAT else 25
+    s.compression_stiffness = 15 if FLAT else 25
+    s.shear_stiffness = 5
+    s.bending_stiffness = 0.08 if FLAT else 0.5   # coton épais : le vent ne le plie pas en boule
+    s.air_damping = 1.0 if A.hanger else 2.5
+    s.vertex_group_mass = "" if A.anim == "chute" else "pin"   # la chute n'est tenue par rien
+    s.use_pressure = A.hanger        # sur cintre : la pression donne du volume ; sinon c'est le corps
+    s.uniform_pressure_force = 0.6
+    s.pressure_factor = 1.0
+    s.shrink_min = 0.0
+    cs = cloth.collision_settings
+    # collision du tissu sur lui-même : c'est elle qui faisait passer la simulation de 0,5 à 13 s par image.
+    # Sur le corps invisible, le torse sépare déjà le devant du dos : inutile. Gardée pour la chute (le tissu
+    # s'y replie vraiment) et le cintre.
+    cs.use_self_collision = FLAT
+    cs.self_distance_min = 0.004
+    cs.distance_min = 0.006
+    cs.collision_quality = 3
+    cs.use_collision = True
+    cloth.point_cache.frame_start = 1
+    cloth.point_cache.frame_end = PREROLL + total_frames
+    if A.anim == "chute":
+        # en apesanteur pendant l'accroche, puis la gravité revient à 2 s : le t-shirt tombe sur le socle
+        f_drop = PREROLL + int(2.0 * A.fps * A.seconds / 15.0)
+        for f_, g in ((1, 0.0), (f_drop - 1, 0.0), (f_drop, -9.81)):
+            scene.gravity = (0.0, 0.0, g)
+            scene.keyframe_insert("gravity", frame=f_)
+        for fc in scene.animation_data.action.fcurves:
+            for kp in fc.keyframe_points:
+                kp.interpolation = "CONSTANT"
+    subd = shirt.modifiers.new("Subdiv", "SUBSURF")
+    subd.levels = 1
+    subd.render_levels = 1   # niveau 2 multipliait le maillage par ~30 : le processeur le reconstruisait à chaque image
+    sol = shirt.modifiers.new("Epaisseur", "SOLIDIFY")
+    sol.thickness = 0.0025
 
-# vent : un souffle principal qui varie + turbulence
-bpy.ops.object.effector_add(type="WIND", location=(-1.6, -1.2, 1.3))
-wind = bpy.context.object
-WIND_DIR = Vector((0.35, -0.9, 0.2)) if A.hanger else Vector((0.4, 0.9, -0.05))   # légèrement vers le bas : ne soulève pas le bas
-wind.rotation_euler = WIND_DIR.to_track_quat("Z", "Y").to_euler()
-# le tissu ne réagit qu'au vent qui le frappe de face. Sur cintre il souffle vers la caméra ;
-# sur le corps il vient de face : le devant se plaque sur le torse, manches et bas claquent derrière.
-wind.field.strength = 0
-wind.field.noise = 3.0
-wind.field.seed = 7
-WIND_BASE = 900 if A.hanger else 1300   # testé stable 15 s avec la retenue douce du torse
-if A.anim in ("chute", "vitrine"):
-    WIND_BASE = 0                       # pas de vent : le tissu tombe ou reste posé
-gusts = ((0.0, 1.0), (0.12, 1.5), (0.22, 0.9), (0.38, 1.7), (0.5, 1.1), (0.62, 1.8), (0.75, 1.0),
-         (0.88, 1.6), (1.0, 1.2))
-for f, k in [(1, 0.0), (PREROLL - 15, 0.0)] + [(PREROLL + fr * total_frames, k) for fr, k in gusts]:
-    wind.field.strength = WIND_BASE * A.wind * k
-    wind.field.keyframe_insert("strength", frame=int(f))
-bpy.ops.object.effector_add(type="TURBULENCE", location=(0, 0, 1.3))
-turb = bpy.context.object
-turb.field.strength = 0 if A.anim in ("chute", "vitrine") else (160 if A.hanger else 48) * A.wind * A.turb
-# (sur le corps, une turbulence forte soulève le tissu jusqu'au col : 48 est testé stable)
-turb.field.size = 0.4
-turb.field.flow = 0.5
+    # vent : un souffle principal qui varie + turbulence
+    bpy.ops.object.effector_add(type="WIND", location=(-1.6, -1.2, 1.3))
+    wind = bpy.context.object
+    WIND_DIR = Vector((0.35, -0.9, 0.2)) if A.hanger else Vector((0.4, 0.9, -0.05))   # légèrement vers le bas : ne soulève pas le bas
+    wind.rotation_euler = WIND_DIR.to_track_quat("Z", "Y").to_euler()
+    # le tissu ne réagit qu'au vent qui le frappe de face. Sur cintre il souffle vers la caméra ;
+    # sur le corps il vient de face : le devant se plaque sur le torse, manches et bas claquent derrière.
+    wind.field.strength = 0
+    wind.field.noise = 3.0
+    wind.field.seed = 7
+    WIND_BASE = 900 if A.hanger else 1300   # testé stable 15 s avec la retenue douce du torse
+    if A.anim in ("chute", "vitrine"):
+        WIND_BASE = 0                       # pas de vent : le tissu tombe ou reste posé
+    gusts = ((0.0, 1.0), (0.12, 1.5), (0.22, 0.9), (0.38, 1.7), (0.5, 1.1), (0.62, 1.8), (0.75, 1.0),
+             (0.88, 1.6), (1.0, 1.2))
+    for f, k in [(1, 0.0), (PREROLL - 15, 0.0)] + [(PREROLL + fr * total_frames, k) for fr, k in gusts]:
+        wind.field.strength = WIND_BASE * A.wind * k
+        wind.field.keyframe_insert("strength", frame=int(f))
+    bpy.ops.object.effector_add(type="TURBULENCE", location=(0, 0, 1.3))
+    turb = bpy.context.object
+    turb.field.strength = 0 if A.anim in ("chute", "vitrine") else (160 if A.hanger else 48) * A.wind * A.turb
+    # (sur le corps, une turbulence forte soulève le tissu jusqu'au col : 48 est testé stable)
+    turb.field.size = 0.4
+    turb.field.flow = 0.5
+
 
 # ─────────────────────────── cintre ───────────────────────────
 def build_hanger():
@@ -626,7 +730,8 @@ cam_d.dof.use_dof = True
 cam_d.dof.focus_object = target
 cam_d.dof.aperture_fstop = 2.8
 
-NECK_Z = shirt.location.z          # hauteur du col
+NECK_Z = GARMENT_NECK_Z if A.garment else shirt.location.z          # hauteur du col
+SURF = 0.0 if FLAT else 0.11   # mise au point sur le tissu devant le torse, pas au milieu du corps
 f0 = PREROLL + 1
 T = A.seconds
 
@@ -635,7 +740,7 @@ def pose_key(frame, az, h, dist, lens, tz, tx=0.0, fstop=2.8):
     """Place la caméra : az = angle autour du t-shirt (0 = face, 180 = dos), h = hauteur au-dessus de
     la cible, dist = distance, tz = hauteur de la cible sous le col, tx = décalage latéral de la cible."""
     a = math.radians(az)
-    tgt = Vector((tx * math.cos(a), tx * math.sin(a), NECK_Z - tz))
+    tgt = Vector((tx * math.cos(a), tx * math.sin(a), NECK_Z - tz)) + Vector((math.sin(a), -math.cos(a), 0)) * SURF
     target.location = tgt
     cam.location = tgt + Vector((dist * math.sin(a), -dist * math.cos(a), h))
     cam_d.lens = lens
@@ -691,9 +796,9 @@ else:
         add_shots([
             (0.0, 2.2, (-14, 0.05, 2.9, 40, 0.38, 0, 4), (-6, 0.08, 2.4, 40, 0.38, 0, 4)),          # large, travelling avant
             (2.2, 6.0, (-38, -0.70, 1.75, 30, 0.30, 0, 2.8), (-18, 0.10, 1.6, 30, 0.34, 0, 2.8)),    # contre-plongée, grue
-            (6.0, 8.0, (-6, 0.02, 1.05, 85, 0.20, 0.06, 2.0), (8, 0.0, 0.95, 85, 0.20, 0.06, 2.0)),  # gros plan poitrine
+            (6.0, 8.0, (-6, 0.02, 1.05, 85, 0.20, 0.06, 4.0), (8, 0.0, 0.95, 85, 0.20, 0.06, 4.0)),  # gros plan poitrine
             (8.0, 10.2, (70, 0.10, 1.6, 35, 0.36, 0, 2.8), (back - 50 if A.turn else 35, 0.15, 1.5, 35, 0.36, 0, 2.8)),
-            (10.2, 11.8, (back, 0.05, 1.55, 50, 0.32, 0, 2.2), (back + 4, 0.03, 1.25, 50, 0.32, 0, 2.2)),  # dos
+            (10.2, 11.8, (back, 0.05, 1.55, 50, 0.32, 0, 3.5), (back + 4, 0.03, 1.25, 50, 0.32, 0, 3.5)),  # dos
             (11.8, 15.0, (back + 22, 0.35, 2.3, 40, 0.62, 0, 4), (back + 34, 0.40, 2.6, 40, 0.62, 0, 4)),  # final
         ])
     # coupes franches entre les plans, mouvements doux à l'intérieur
@@ -734,7 +839,14 @@ def _sim_progress(sc, _dg=None):
 
 
 baked = False
-if A.blend:
+if A.garment:
+    # vêtement déjà animé : rien à simuler
+    baked = True
+    if A.blend:
+        os.makedirs(os.path.dirname(os.path.abspath(A.blend)), exist_ok=True)
+        bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(A.blend))
+    print("[tshirt3d] vêtement importé : pas de simulation", flush=True)
+elif A.blend:
     # La simulation est « cuite » sur le disque à côté du .blend (dossier blendcache_...). La version
     # finale rouvre ce .blend avec --render-only et ne refait pas la simulation.
     try:
@@ -757,6 +869,15 @@ if not baked:
         scene.frame_set(f)
         _sim_progress(scene)
 print(f"[tshirt3d] simulation terminée en {(time.time() - t_sim) / 60:.1f} min", flush=True)
+
+if A.export_abc:
+    # export du t-shirt animé (sert à tester --garment, ou à réutiliser la simulation ailleurs)
+    for o in bpy.context.view_layer.objects:
+        o.select_set(o == shirt)
+    bpy.context.view_layer.objects.active = shirt
+    bpy.ops.wm.alembic_export(filepath=os.path.abspath(A.export_abc), start=1, end=n_sim,
+                              selected=True, uvs=True, face_sets=False, as_background_job=False)
+    print(f"[tshirt3d] Alembic exporté : {A.export_abc}", flush=True)
 
 if A.sim_only:
     dg = bpy.context.evaluated_depsgraph_get()

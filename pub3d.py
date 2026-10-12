@@ -134,6 +134,8 @@ def main():
     ap.add_argument("--samples", type=int, default=64,
                     help="qualité Cycles de la version finale (64 + débruitage ; 128 = plus propre, 2x plus long)")
     ap.add_argument("--resim", action="store_true", help="refait la simulation même si elle existe déjà")
+    ap.add_argument("--garment", help="vêtement déjà animé (.abc exporté de Marvelous Designer) : pas de simulation")
+    ap.add_argument("--facing", choices=["-y", "+y"], default="-y", help="si le vêtement importé est de dos, mets +y")
     ap.add_argument("--fast", action="store_true", help="(ancien nom du brouillon, par défaut maintenant)")
     ap.add_argument("--preview", action="store_true", help="540x960 EEVEE : juste pour vérifier le cadrage")
     ap.add_argument("--hanger", action="store_true", help="t-shirt sur un cintre (par défaut : porté par un corps invisible)")
@@ -177,6 +179,7 @@ def main():
         "anim": A.anim, "front": file_sig(A.front), "back": file_sig(A.back) if A.back else None, "color": color,
         "print": [A.print_size, A.print_top], "wind": A.wind, "hanger": A.hanger, "orbit": A.orbit,
         "seconds": seconds, "script": file_sig(HERE / "tshirt3d" / "tshirt3d.py"),
+        "garment": file_sig(A.garment) if A.garment else None, "facing": A.facing,
     }
     reuse = (not A.resim and not A.preview and blend.exists() and sig_path.exists()
              and json.loads(sig_path.read_text(encoding="utf-8")) == signature)
@@ -197,6 +200,8 @@ def main():
                 cmd += ["--hanger"]
             if A.orbit:
                 cmd += ["--orbit"]
+            if A.garment:
+                cmd += ["--garment", str(Path(A.garment).resolve()), "--facing", A.facing]
             if not A.preview:
                 cmd += ["--blend", str(blend)]
                 if sig_path.exists():

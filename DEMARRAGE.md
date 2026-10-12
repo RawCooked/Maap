@@ -55,6 +55,17 @@ Ouvre ensuite `design\produit.json` pour changer le nom, le prix et les textes. 
 
 **Musique :** mets tes MP3 libres de droits dans `musique\` (`musique\vent.mp3`, `musique\chute.mp3`, `musique\vitrine.mp3`, ou un seul MP3 pour toutes). Sans MP3, un beat est généré.
 
+## 4 ter. Vêtement importé (Marvelous Designer) : physique professionnelle
+Le t-shirt simulé dans Marvelous Designer sur un personnage Mixamo qui danse, exporté en **Alembic (.abc)**, remplace notre t-shirt maison :
+```
+ANIM1_VENT.bat --garment modeles\danse1.abc          (6 plans)
+ANIM3_VITRINE.bat --garment modeles\danse1.abc       (tour à 360°)
+```
+- Pas de simulation : seulement le rendu. La même danse sert pour **tous** tes designs.
+- Le script met le vêtement à l'échelle (cm, mm ou m), le centre, pose ton design devant et derrière, et garde la musique, les plans, le montage.
+- Export Marvelous Designer : **Alembic (Ogawa)**, *un seul maillage* (« combine objects »), sans l'avatar, avec la danse **In Place** (Mixamo) pour que le personnage reste au centre.
+- Si le devant apparaît de dos : ajoute `--facing +y`.
+
 ## 4 bis. Autres lanceurs
 | Fichier | Ce qu'il fait | Durée estimée sur ton PC* |
 |---|---|---|
